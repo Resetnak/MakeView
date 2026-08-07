@@ -2,6 +2,8 @@
 // Makeview – line viewer of make targets + README per project.
 // Single-file PHP server. Mount projects read-only at /projects.
 
+error_reporting(E_ALL & ~E_DEPRECATED); // Parsedown 1.7.4 is noisy on PHP 8.4
+
 define('ROOT', rtrim(getenv('MAKEVIEW_DIR') ?: '/projects', '/'));
 
 /** Scan ROOT for project dirs that have a Makefile or README. */

@@ -8,6 +8,10 @@ binary needed), and renders their **READMEs**. Click any `make` command to copy 
 > UI text is in Czech. No database, no framework, no build step — one PHP file
 > plus [Parsedown](https://github.com/erusev/parsedown) for markdown.
 
+![Dashboard (dark mode)](docs/dashboard-dark.png)
+
+![Project detail (light mode)](docs/project-light.png)
+
 ## Install
 
 ### Docker (recommended)
