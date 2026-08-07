@@ -1,0 +1,10 @@
+services:
+  makeview:
+    build: .
+    restart: unless-stopped   # auto-start with Docker daemon
+    ports:
+      # Bound to localhost only — the dashboard exposes your project READMEs.
+      - "127.0.0.1:8111:8080"
+    volumes:
+      # Mount the whole personal workspace read-only.
+      - ${PERSONAL_DIR:-..}:/projects:ro

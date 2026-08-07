@@ -1,0 +1,11 @@
+# Downloaded dependency (fetched by Dockerfile / curl, see README)
+Parsedown.php
+
+# Internal working docs & tooling — not part of the public app
+.impeccable/
+CLAUDE.md
+DESIGN.md
+PRODUCT.md
+
+# OS noise
+.DS_Store
