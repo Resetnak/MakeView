@@ -13,7 +13,7 @@ binary needed), and renders their **READMEs**. Click any `make` command to copy 
 ### Docker (recommended)
 
 ```bash
-git clone https://github.com/<you>/makeview && cd makeview
+git clone https://github.com/Resetnak/MakeView && cd MakeView
 PERSONAL_DIR=~/projects docker compose up -d --build
 # → http://localhost:8111
 ```
