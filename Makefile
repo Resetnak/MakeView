@@ -18,7 +18,7 @@ test: ## Run the PHPUnit suite
 coverage: ## Run the suite with a coverage summary
 	./bin/dev vendor/bin/phpunit --coverage-text
 
-up: ## Start the dashboard on http://localhost:8111
+up: ## Start the dashboard on http://localhost:9898
 	docker compose up -d --build
 
 down: ## Stop the dashboard

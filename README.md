@@ -21,7 +21,7 @@ themselves. Click any command, URL, or credential to copy it.
 ```bash
 git clone https://github.com/Resetnak/MakeView && cd MakeView
 PERSONAL_DIR=~/projects docker compose up -d --build
-# → http://localhost:8111
+# → http://localhost:9898
 ```
 
 `PERSONAL_DIR` is the directory containing your projects (defaults to the
@@ -34,8 +34,8 @@ Needs PHP 8.2+ and Composer.
 
 ```bash
 composer install --no-dev
-MAKEVIEW_DIR=~/projects php -S 127.0.0.1:8111 index.php
-# → http://localhost:8111
+MAKEVIEW_DIR=~/projects php -S 127.0.0.1:9898 index.php
+# → http://localhost:9898
 ```
 
 `MAKEVIEW_DIR` points at your projects directory (defaults to `/projects`).
@@ -76,7 +76,7 @@ make test       # PHPUnit
 
 Composer and PHPUnit run inside Docker through `bin/dev`, because the host PHP
 usually lacks the dom/xml/mbstring extensions they need. `make up` starts the
-dashboard itself on http://localhost:8111.
+dashboard itself on http://localhost:9898.
 
 Parsers live in `src/` and take file **contents**, not paths — all filesystem
 access is in `src/Project.php`. That is what keeps `tests/` free of fixtures on
