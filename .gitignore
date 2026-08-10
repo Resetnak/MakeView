@@ -6,6 +6,7 @@ Parsedown.php
 
 # PHPUnit
 .phpunit.cache/
+.phpunit.result.cache
 /coverage/
 
 # Internal working docs & tooling — not part of the public app
