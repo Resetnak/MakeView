@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run a command in the development container.
+#
+#   bin/dev composer install
+#   bin/dev vendor/bin/phpunit
+#
+# The host PHP lacks dom/xml/mbstring, so Composer and PHPUnit run in Docker.
+set -eu
+
+cd "$(dirname "$0")/.."
+
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+export HOST_UID HOST_GID
+
+exec docker compose -f compose.dev.yml run --rm tools "$@"

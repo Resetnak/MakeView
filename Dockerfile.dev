@@ -1,0 +1,14 @@
+# Development image: PHP with the extensions Composer and PHPUnit need.
+# The production image (Dockerfile) stays minimal on purpose.
+FROM php:8.3-cli-alpine
+
+RUN apk add --no-cache git unzip $PHPIZE_DEPS oniguruma-dev libxml2-dev \
+    && docker-php-ext-install dom xml mbstring \
+    && apk del $PHPIZE_DEPS
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_CACHE_DIR=/tmp/composer-cache
+
+WORKDIR /app

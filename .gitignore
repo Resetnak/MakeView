@@ -1,6 +1,13 @@
 # Downloaded dependency (fetched by Dockerfile / curl, see README)
 Parsedown.php
 
+# Composer
+/vendor/
+
+# PHPUnit
+.phpunit.cache/
+/coverage/
+
 # Internal working docs & tooling — not part of the public app
 .impeccable/
 CLAUDE.md
