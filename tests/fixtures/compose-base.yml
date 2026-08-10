@@ -1,0 +1,15 @@
+services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+    environment:
+      APP_ENV: production
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: prod-secret
+      POSTGRES_DB: appdb

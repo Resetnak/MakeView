@@ -1,0 +1,10 @@
+services:
+  web:
+    ports:
+      - "3000:80"
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=1
+  db:
+    environment:
+      POSTGRES_PASSWORD: dev-secret
