@@ -441,4 +441,82 @@ final class ReadmeTest extends TestCase
         self::assertCount(1, $links);
         self::assertSame(['password' => 'secret'], $this->credentialValues($links, 'App'));
     }
+
+    // ---- real-world credential vocabulary ----
+
+    public function testEmailColumnActsAsTheUsername(): void
+    {
+        $markdown = <<<'MD'
+        ### Testovací přihlašovací údaje
+
+        | Email | Heslo | Role |
+        |-------|-------|------|
+        | `admin@automarket.cz` | `Admin1234!` | super_admin |
+        MD;
+
+        $links = Readme::parse($markdown);
+
+        self::assertSame(
+            ['user' => 'admin@automarket.cz', 'password' => 'Admin1234!'],
+            $this->credentialValues($links, 'admin@automarket.cz'),
+        );
+    }
+
+    public function testCredentialTableWithoutServiceOrUrlColumnStillYieldsRows(): void
+    {
+        $markdown = <<<'MD'
+        #### Seed uživatelé
+
+        | Email | Heslo | Role | Portál |
+        |-------|-------|------|--------|
+        | `dealer@automarket.cz` | `Dealer1234!` | dealer | dealer-portal |
+        | `jan.novak@gmail.com` | `password123` | user | web-app |
+        MD;
+
+        $links = Readme::parse($markdown);
+
+        // The Portál column names the service, so it wins the label over the
+        // account; the account still survives as the user credential.
+        self::assertCount(2, $links);
+        self::assertSame(
+            ['user' => 'jan.novak@gmail.com', 'password' => 'password123'],
+            $this->credentialValues($links, 'web-app'),
+        );
+    }
+
+    public function testBareUrlsOnLocalhostAreLabelledWithPortNotJustHost(): void
+    {
+        $markdown = "## Příkazy\n\nhttp://localhost:4200 a http://localhost:4201\n";
+
+        $labels = array_map(fn ($link) => $link->label, Readme::parse($markdown));
+
+        self::assertSame(['localhost:4200', 'localhost:4201'], $labels);
+    }
+
+    public function testBadgeImagesAreNotListedAsLinks(): void
+    {
+        $markdown = "# Project\n\n[![CI](https://ci.example.com/badge.svg)](https://ci.example.com/runs)\n";
+
+        $labels = array_map(fn ($link) => $link->label, Readme::parse($markdown));
+
+        self::assertNotContains('!CI', $labels);
+        self::assertNotContains('![CI', $labels);
+    }
+
+    public function testEnglishAndBoldLabelledDefinitionsAreRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Access
+
+        [Grafana](https://grafana.localhost)
+
+        - **Username**: admin
+        - **Password**: grafana-secret
+        MD;
+
+        self::assertSame(
+            ['user' => 'admin', 'password' => 'grafana-secret'],
+            $this->credentialValues(Readme::parse($markdown), 'Grafana'),
+        );
+    }
 }

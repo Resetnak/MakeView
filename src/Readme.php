@@ -16,11 +16,17 @@ use Makeview\Value\Link;
 final class Readme
 {
     private const CREDENTIAL_WORDS =
-        'user|uživatel|uzivatel|jméno|jmeno|login|username|heslo|password|pass|token|api\s?key';
+        'user(?:name)?|uživatel(?:ské\s+jméno)?|uzivatel(?:ske\s+jmeno)?|přihlašovací\s+jméno|prihlasovaci\s+jmeno'
+        . '|jméno|jmeno|login|e-?mail|účet|ucet|account'
+        . '|heslo|password|passwd|pass|token|api[\s_-]?key|secret|klíč|klic';
 
     /** Credential kind by the Czech or English word that introduced it. */
-    private const USER_WORDS = ['user', 'uživatel', 'uzivatel', 'jméno', 'jmeno', 'login', 'username'];
-    private const TOKEN_WORDS = ['token', 'api key', 'apikey', 'api_key'];
+    private const USER_WORDS = [
+        'user', 'username', 'uživatel', 'uzivatel', 'uživatelské jméno', 'uzivatelske jmeno',
+        'přihlašovací jméno', 'prihlasovaci jmeno', 'jméno', 'jmeno', 'login',
+        'email', 'e-mail', 'účet', 'ucet', 'account',
+    ];
+    private const TOKEN_WORDS = ['token', 'api key', 'apikey', 'api_key', 'api-key', 'klíč', 'klic'];
 
     /** @return Link[] */
     public static function parse(string $markdown): array
@@ -218,24 +224,30 @@ final class Readme
                 $columns['url'] = $index;
                 continue;
             }
-            if (!isset($columns['user']) && preg_match('/uživatel|uzivatel|user|login|jméno|jmeno/', $normalized) === 1) {
+            if (!isset($columns['user']) && preg_match('/uživatel|uzivatel|user|login|jméno|jmeno|e-?mail|účet|ucet|account/', $normalized) === 1) {
                 $columns['user'] = $index;
                 continue;
             }
-            if (!isset($columns['password']) && preg_match('/heslo|password|pass|token|klíč|klic|key/', $normalized) === 1) {
+            if (!isset($columns['password']) && preg_match('/heslo|password|passwd|pass|token|klíč|klic|key|secret/', $normalized) === 1) {
                 $columns['password'] = $index;
                 continue;
             }
-            if (!isset($columns['name']) && preg_match('/služba|sluzba|service|název|nazev|name|prostředí|prostredi|env/', $normalized) === 1) {
+            if (!isset($columns['name']) && preg_match('/služba|sluzba|service|název|nazev|name|prostředí|prostredi|env|portál|portal|aplikace|app/', $normalized) === 1) {
                 $columns['name'] = $index;
             }
         }
 
-        // The label column is the service name when present, otherwise the URL.
+        // The label column is the service name when present, then the URL. A
+        // credential table often has neither — `| Email | Heslo | Role |` names
+        // no service at all — and there the account itself is the only thing
+        // that identifies the row, so it becomes the label. Without this the
+        // whole table used to be discarded for want of a label column.
         if (isset($columns['name'])) {
             $columns['label'] = $columns['name'];
         } elseif (isset($columns['url'])) {
             $columns['label'] = $columns['url'];
+        } elseif (isset($columns['user'])) {
+            $columns['label'] = $columns['user'];
         }
 
         return $columns;
@@ -399,6 +411,16 @@ final class Readme
         $links = [];
         $consumed = $line;
 
+        // Badges — ![alt](image) on its own, or wrapped in a link as
+        // [![alt](image)](target) — are decoration, not addresses a reader would
+        // ever open. Drop the image syntax first so neither the image URL nor the
+        // leftover "![alt" text can become a link or a label. The wrapping link's
+        // target goes too: a badge's target is CI plumbing, and it would otherwise
+        // surface under the alt text of an image nobody asked to see.
+        $consumed = (string) preg_replace('/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/', '', $consumed);
+        $consumed = (string) preg_replace('/!\[[^\]]*\]\([^)]*\)/', '', $consumed);
+        $line = $consumed;
+
         // [label](url)
         if (preg_match_all('/\[([^\]]*)\]\(\s*([^)\s]+)[^)]*\)/', $line, $matches, PREG_SET_ORDER) !== false) {
             foreach ($matches as $match) {
@@ -509,9 +531,31 @@ final class Readme
         return $url;
     }
 
+    /**
+     * Label for a link that carries no text of its own. The port is part of it:
+     * a README that lists http://localhost:4200, :4201 and :4202 describes three
+     * different services, and labelling all three "localhost" makes the list
+     * useless. The path is kept for the same reason when the host alone would
+     * not distinguish two entries.
+     */
     private static function hostOf(string $url): string
     {
-        return parse_url($url, PHP_URL_HOST) ?: $url;
+        $host = parse_url($url, PHP_URL_HOST);
+        if (!is_string($host) || $host === '') {
+            return $url;
+        }
+
+        $port = parse_url($url, PHP_URL_PORT);
+        if (is_int($port)) {
+            $host .= ':' . $port;
+        }
+
+        $path = parse_url($url, PHP_URL_PATH);
+        if (is_string($path) && trim($path, '/') !== '') {
+            $host .= rtrim($path, '/');
+        }
+
+        return $host;
     }
 
     private static function stripInlineMarkdown(string $text): string

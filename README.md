@@ -50,6 +50,9 @@ READMEs, so don't point it at private projects on a public server.
 ## How it works
 
 - A project is any subdirectory of `MAKEVIEW_DIR` with a `Makefile` or `README.md`.
+  A subdirectory with neither is treated as a container that merely groups
+  repositories, and its own children are checked too (one level deeper, so
+  `dental/clinic-api` shows up). Dot-directories and vendor trees are skipped.
 - Documented targets (`build: ## Compile the thing`) get descriptions; bare targets are listed too.
 - Dashboard sorts projects by last git activity (`.git/index` mtime); pins are stored in `localStorage`.
 - READMEs are mined for links and credentials, not rendered in full; project selection is whitelisted (no path traversal).
@@ -58,6 +61,10 @@ READMEs, so don't point it at private projects on a public server.
   get the address you'd actually type into a browser.
 - README links are paired with nearby credentials — from a markdown table, from
   `user:` / `heslo:` lines, or from `export KEY=value` inside a fenced block.
+  Both Czech and English labels count, and `Email` is read as the username: a
+  `| Email | Heslo | Role |` table yields one entry per account. Badges are
+  ignored, and a bare URL is labelled with its port so three services on
+  localhost stay apart.
   Pairing never crosses a heading, and each entry shows the section it came from
   so a wrong guess is easy to spot.
 - Passwords are masked on screen with a reveal toggle. **This is a
