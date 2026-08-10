@@ -1,51 +1,23 @@
 <?php
-// Makeview – line viewer of make targets + README per project.
+
+declare(strict_types=1);
+
+// Makeview – line viewer of make targets, services & README per project.
 // Single-file PHP server. Mount projects read-only at /projects.
 
 require_once __DIR__ . '/vendor/autoload.php';
 
 use Makeview\Make;
+use Makeview\Project;
+use Makeview\Value\Credential;
 
 error_reporting(E_ALL & ~E_DEPRECATED); // Parsedown 1.7.4 is noisy on PHP 8.4
 
 define('ROOT', rtrim(getenv('MAKEVIEW_DIR') ?: '/projects', '/'));
 
-/** Scan ROOT for project dirs that have a Makefile or README. */
-function scan_projects(): array {
-    $out = [];
-    foreach (glob(ROOT . '/*', GLOB_ONLYDIR) as $dir) {
-        $name = basename($dir);
-        $mk = first_existing($dir, ['Makefile', 'makefile', 'GNUmakefile']);
-        $rd = first_existing($dir, ['README.md', 'readme.md', 'Readme.md']);
-        if ($mk || $rd) {
-            $out[$name] = ['name' => $name, 'makefile' => $mk, 'readme' => $rd];
-        }
-    }
-    ksort($out, SORT_NATURAL | SORT_FLAG_CASE);
-    return $out;
-}
-
-function first_existing(string $dir, array $names): ?string {
-    foreach ($names as $n) {
-        if (is_file("$dir/$n")) return "$dir/$n";
-    }
-    return null;
-}
-
-/** Cheap per-project metadata read straight from the filesystem (no git binary). */
-function project_meta(string $dir): array {
-    $branch = null;
-    if (is_file("$dir/.git/HEAD")) {
-        $head = trim((string)file_get_contents("$dir/.git/HEAD"));
-        $branch = str_starts_with($head, 'ref: refs/heads/') ? substr($head, 16) : substr($head, 0, 7);
-    }
-    // ponytail: .git/index mtime ~ last add/commit/checkout; dir mtime as fallback
-    $mtime = is_file("$dir/.git/index") ? filemtime("$dir/.git/index") : filemtime($dir);
-    $stack = [];
-    if (is_file("$dir/composer.json")) $stack[] = 'PHP';
-    if (is_file("$dir/package.json")) $stack[] = 'JS';
-    if (is_file("$dir/Dockerfile") || is_file("$dir/compose.yml") || is_file("$dir/docker-compose.yml")) $stack[] = 'Docker';
-    return ['branch' => $branch, 'mtime' => $mtime, 'stack' => $stack];
+function h(string $s): string
+{
+    return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
 }
 
 /** Czech relative time: "před 5 min", "včera", "před 3 dny"… */
@@ -74,10 +46,41 @@ function readme_excerpt(string $file, int $max = 220): ?string {
     return null;
 }
 
-function h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
+/** Render one credential copy-and-reveal widget. */
+function credential_widget(Credential $c): string
+{
+    $label = h($c->label);
+
+    if ($c->isPlaceholder) {
+        return '<span class="cred cred-ph" title="' . $label . '">' . h($c->value) . '</span>';
+    }
+
+    if ($c->kind === 'user') {
+        return '<button type="button" class="cred cmd" data-cmd="' . h($c->value) . '"'
+            . ' data-tip="Kopírovat ' . $label . '">' . h($c->value) . '</button>';
+    }
+
+    $encoded = h(base64_encode($c->value));
+
+    return '<span class="cred cred-secret">'
+        . '<span class="cred-mask" data-val="' . $encoded . '">•••••••</span>'
+        . '<button type="button" class="cred-eye" aria-label="Zobrazit ' . $label . '" title="Zobrazit">👁</button>'
+        . '<button type="button" class="cred-copy" data-val="' . $encoded . '" aria-label="Kopírovat ' . $label . '" title="Kopírovat">⧉</button>'
+        . '</span>';
+}
+
+/** Render a URL as a clickable link only when the scheme is http(s). */
+function url_link(string $url): string
+{
+    if (preg_match('/^https?:\/\//i', $url) !== 1) {
+        return '<span class="hint">' . h($url) . '</span>';
+    }
+
+    return '<a class="url" href="' . h($url) . '" target="_blank" rel="noopener noreferrer">' . h($url) . '</a>';
+}
 
 // ---- routing ----
-$projects = scan_projects();
+$projects = Project::scan(ROOT);
 $sel = $_GET['p'] ?? null;
 if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: block traversal; is_string blocks ?p[]=
 
@@ -233,6 +236,44 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   .empty { color:var(--muted); font-style:italic; margin:6px 0 24px; font-size:13px; }
   .empty::before { content:"∅ "; font-style:normal; }
 
+  /* services + readme links */
+  .svc-name { font-weight:600; }
+  .svc-url { white-space:nowrap; }
+  .svc-creds { text-align:right; white-space:nowrap; }
+  .url { color:var(--accent); text-decoration:none;
+         text-underline-offset:3px; text-decoration-line:underline;
+         text-decoration-color:color-mix(in oklab, var(--accent) 35%, transparent); }
+  .url:hover { text-decoration-color:var(--accent); }
+
+  .cred { display:inline-flex; align-items:center; gap:4px; margin-left:10px;
+          font-size:13px; vertical-align:middle; }
+  .cred.cmd { margin-left:10px; }
+  .cred-ph { color:var(--muted); font-style:italic; }
+  .cred-secret { display:inline-flex; align-items:center; gap:4px; padding:2px 6px;
+                 border:1px solid var(--line); border-radius:4px;
+                 background:var(--panel); }
+  .cred-mask { font-family:inherit; letter-spacing:.08em; color:var(--muted); }
+  .cred-mask.shown { color:var(--ink); letter-spacing:0; }
+  .cred-eye, .cred-copy { border:none; background:none; cursor:pointer; opacity:.6;
+                           font-size:11px; line-height:1; padding:2px; }
+  .cred-eye:hover, .cred-copy:hover { opacity:1; }
+  .cred-copy.copied { opacity:1; color:var(--accent); }
+
+  .links { border-top:1px solid var(--line); margin:8px 0 0; }
+  .lrow { padding:11px 10px; border-bottom:1px solid var(--hairline); }
+  .lhead { display:flex; gap:12px; align-items:baseline; }
+  .llabel { font-size:15px; font-weight:600; letter-spacing:-.01em; }
+  .lctx { flex:1; text-align:right; color:var(--muted); font-size:12px;
+          overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lbody { display:flex; margin-top:4px; flex-wrap:wrap; align-items:center; gap:2px 4px; }
+  .lbody .cred:first-child { margin-left:0; }
+
+  @media (max-width:720px) {
+    .svc-creds { text-align:left; white-space:normal; }
+    .cred-eye, .cred-copy { padding:8px 6px; font-size:13px; }
+    .lctx { display:none; }
+  }
+
   /* README: prose in sans for readability, code stays mono */
   .readme { margin-top:10px; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
             font-size:15px; }
@@ -292,7 +333,7 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   // catalog: enrich + sort by last activity; freshest project is the featured exhibit
   $cards = [];
   foreach ($projects as $name => $p) {
-    $m = project_meta(ROOT . '/' . $name);
+    $m = Project::meta(ROOT . '/' . $name);
     $m['targets'] = $p['makefile'] ? count(Make::parseTargets((string)file_get_contents($p['makefile']))['documented']) : 0;
     $cards[$name] = $m;
   }
@@ -300,10 +341,12 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   $featName = array_key_first($cards);
   $featTargets = [];
   $featExcerpt = null;
+  $featServices = [];
   if ($featName !== null) {
     $fp = $projects[$featName];
     if ($fp['makefile']) $featTargets = array_slice(Make::parseTargets((string)file_get_contents($fp['makefile']))['documented'], 0, 3);
     if ($fp['readme']) $featExcerpt = readme_excerpt($fp['readme']);
+    $featServices = Project::services(ROOT . '/' . $featName);
   }
 ?>
   <h2 class="title home">makeview</h2>
@@ -325,6 +368,11 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
             <button type="button" class="cmd" data-cmd="make <?= h($c['target']) ?>" data-tip="<?= h($c['desc']) ?>">make <?= h($c['target']) ?></button>
           <?php endforeach; ?>
         </div>
+      <?php endif; ?>
+      <?php if ($featServices): $firstUrl = null; foreach ($featServices as $s) { if ($s->url !== null) { $firstUrl = $s->url; break; } } ?>
+        <?php if ($firstUrl !== null): ?>
+          <p class="fmeta"><?= url_link($firstUrl) ?></p>
+        <?php endif; ?>
       <?php endif; ?>
     </section>
   <?php endif; ?>
@@ -350,7 +398,7 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
 <?php else:
   $p = $projects[$sel];
   $parsed = $p['makefile'] ? Make::parseTargets((string)file_get_contents($p['makefile'])) : ['documented' => [], 'bare' => []];
-  $m = project_meta(ROOT . '/' . $sel);
+  $m = Project::meta(ROOT . '/' . $sel);
 ?>
   <h2 class="title"><?= h($sel) ?></h2>
   <div class="meta">
@@ -392,6 +440,54 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
     <p class="empty">Projekt nemá Makefile.</p>
   <?php endif; ?>
 
+  <?php
+    $services = Project::services(ROOT . '/' . $sel);
+    $composeFailed = Project::composeFailed(ROOT . '/' . $sel);
+  ?>
+  <?php if ($composeFailed): ?>
+    <h3 class="sect">Služby</h3>
+    <p class="empty">compose.yml se nepodařilo zpracovat.</p>
+  <?php elseif ($services): ?>
+    <h3 class="sect">Služby</h3>
+    <table class="cmds">
+      <?php foreach ($services as $s): ?>
+        <tr>
+          <td class="svc-name"><?= h($s->name) ?></td>
+          <td class="svc-url">
+            <?php if ($s->url !== null): ?>
+              <?= url_link($s->url) ?>
+              <span class="hint"><?= $s->urlSource === 'traefik' ? 'traefik' : 'localhost' ?></span>
+            <?php else: ?>
+              <span class="hint">—</span>
+            <?php endif; ?>
+          </td>
+          <td class="svc-creds">
+            <?php foreach ($s->credentials as $c): ?><?= credential_widget($c) ?><?php endforeach; ?>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+    </table>
+  <?php endif; ?>
+
+  <?php $links = $p['readme'] ? Project::readmeLinks($p['readme']) : []; ?>
+  <?php if ($links): ?>
+    <h3 class="sect">Odkazy z README</h3>
+    <div class="links">
+      <?php foreach ($links as $l): ?>
+        <div class="lrow">
+          <div class="lhead">
+            <span class="llabel"><?= h($l->label) ?></span>
+            <?php if ($l->context !== ''): ?><span class="lctx"><?= h($l->context) ?></span><?php endif; ?>
+          </div>
+          <div class="lbody">
+            <?php if ($l->url !== null): ?><?= url_link($l->url) ?><?php endif; ?>
+            <?php foreach ($l->credentials as $c): ?><?= credential_widget($c) ?><?php endforeach; ?>
+          </div>
+        </div>
+      <?php endforeach; ?>
+    </div>
+  <?php endif; ?>
+
   <?php if ($p['readme']):
     $pd = new Parsedown();
     $pd->setSafeMode(true);
@@ -411,6 +507,34 @@ document.addEventListener('click', e => {
   c.dataset.origTip ??= c.dataset.tip;
   c.classList.add('copied'); c.dataset.tip = 'Zkopírováno';
   setTimeout(() => { c.classList.remove('copied'); c.dataset.tip = c.dataset.origTip; }, 1000);
+});
+
+// Credential reveal + copy. Values are base64 in data-val so they don't shout
+// at view-source; this is a screen-sharing convenience, not a secret store.
+document.addEventListener('click', e => {
+  const eye = e.target.closest('.cred-eye');
+  if (eye) {
+    const mask = eye.parentElement.querySelector('.cred-mask');
+    const shown = mask.classList.toggle('shown');
+    mask.textContent = shown ? atob(mask.dataset.val) : '•••••••';
+    eye.setAttribute('aria-label', (shown ? 'Skrýt' : 'Zobrazit'));
+    return;
+  }
+
+  const copy = e.target.closest('.cred-copy');
+  if (!copy) return;
+  navigator.clipboard?.writeText(atob(copy.dataset.val));
+  copy.classList.add('copied');
+  setTimeout(() => copy.classList.remove('copied'), 1000);
+});
+
+// Re-mask everything when focus leaves the page — avoids a revealed password
+// lingering on screen after switching away.
+window.addEventListener('blur', () => {
+  document.querySelectorAll('.cred-mask.shown').forEach(m => {
+    m.classList.remove('shown');
+    m.textContent = '•••••••';
+  });
 });
 
 // Pinned favorites in localStorage — reorders a pinned copy into the top section.
