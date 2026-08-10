@@ -1,12 +1,14 @@
 # Makeview
 
-A single-file PHP dashboard for your local projects. It scans a directory of
-projects, parses their **Makefile targets** (documented `target: ## desc` first),
-shows **git branch + last activity** (read straight from `.git` files, no git
-binary needed), and renders their **READMEs**. Click any `make` command to copy it.
+A PHP dashboard for your local projects. It scans a directory of projects,
+parses their **Makefile targets** (documented `target: ## desc` first), pulls
+**services and URLs** out of `compose.yml` (including Traefik hostnames), finds
+**links and credentials** in READMEs, shows **git branch + last activity** (read
+straight from `.git` files, no git binary needed), and renders the READMEs
+themselves. Click any command, URL, or credential to copy it.
 
-> UI text is in Czech. No database, no framework, no build step — one PHP file
-> plus [Parsedown](https://github.com/erusev/parsedown) for markdown.
+> UI text is in Czech. No database, no framework, no build step — one PHP file,
+> a handful of small modules, and two Composer packages.
 
 ![Dashboard (dark mode)](docs/dashboard-dark.png)
 
@@ -28,10 +30,10 @@ writes to your projects.
 
 ### Local PHP (no Docker)
 
-Needs PHP 8.2+. Grab Parsedown once, then run the built-in server:
+Needs PHP 8.2+ and Composer.
 
 ```bash
-curl -fLo Parsedown.php https://raw.githubusercontent.com/erusev/parsedown/1.7.4/Parsedown.php
+composer install --no-dev
 MAKEVIEW_DIR=~/projects php -S 127.0.0.1:8111 index.php
 # → http://localhost:8111
 ```
@@ -40,10 +42,10 @@ MAKEVIEW_DIR=~/projects php -S 127.0.0.1:8111 index.php
 
 ### Any PHP host
 
-It's one file — drop `index.php` + `Parsedown.php` into any PHP 8.2+ webroot
-and set the `MAKEVIEW_DIR` env var. Note the app is meant for **your own
-machine**: it happily displays everything it finds, so don't point it at
-private projects on a public server.
+Drop `index.php`, `src/`, and `vendor/` into any PHP 8.2+ webroot and set the
+`MAKEVIEW_DIR` env var. Note the app is meant for **your own machine**: it
+happily displays everything it finds, including credentials written in your
+READMEs, so don't point it at private projects on a public server.
 
 ## How it works
 
@@ -51,6 +53,29 @@ private projects on a public server.
 - Documented targets (`build: ## Compile the thing`) get descriptions; bare targets are listed too.
 - Dashboard sorts projects by last git activity (`.git/index` mtime); pins are stored in `localStorage`.
 - READMEs render through Parsedown in safe mode; project selection is whitelisted (no path traversal).
+- Services come from `compose.yml` (plus `compose.override.yml` when present).
+  A Traefik ``Host(`app.localhost`)`` label wins over a published port, so you
+  get the address you'd actually type into a browser.
+- README links are paired with nearby credentials — from a markdown table, from
+  `user:` / `heslo:` lines, or from `export KEY=value` inside a fenced block.
+  Pairing never crosses a heading, and each entry shows the section it came from
+  so a wrong guess is easy to spot.
+- Passwords are masked on screen with a reveal toggle. **This is a
+  screen-sharing convenience, not a security feature** — the values are in the
+  page source, and anyone with the page has them. Same as before: run this on
+  your own machine.
+- `.env` files are never read, and `${VAR}` placeholders are shown unresolved.
+
+## Development
+
+```bash
+composer install
+./bin/dev vendor/bin/phpunit   # host PHP lacks dom/xml/mbstring; run tests in Docker
+```
+
+Parsers live in `src/` and take file **contents**, not paths — all filesystem
+access is in `src/Project.php`. That is what keeps `tests/` free of fixtures on
+disk beyond `tests/fixtures/`.
 
 ## License
 
