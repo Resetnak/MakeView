@@ -67,11 +67,36 @@ final class CredentialKeysTest extends TestCase
         self::assertTrue(CredentialKeys::isPlaceholder('...'));
     }
 
+    /**
+     * A possessive word anywhere in the value is an instruction to substitute,
+     * however the author spelled the rest of it. No fixed list of spellings
+     * would have covered `sk-your-openai-api-key`.
+     */
+    public function testDetectsPlaceholdersByTheirWording(): void
+    {
+        self::assertTrue(CredentialKeys::isPlaceholder('your-api-key'));
+        self::assertTrue(CredentialKeys::isPlaceholder('sk-your-openai-api-key'));
+        self::assertTrue(CredentialKeys::isPlaceholder('my-secret-token'));
+        self::assertTrue(CredentialKeys::isPlaceholder('insert-token-here'));
+    }
+
     public function testRealValuesAreNotPlaceholders(): void
     {
         self::assertFalse(CredentialKeys::isPlaceholder('admin'));
         self::assertFalse(CredentialKeys::isPlaceholder('s3cr3t-p4ss'));
         self::assertFalse(CredentialKeys::isPlaceholder('hunter2'));
+    }
+
+    /**
+     * example.com is the domain reserved for documentation, so a README that
+     * lists `test@example.com` is stating the address a reader should actually
+     * log in with. Treating the "example" in it as a substitution marker would
+     * grey out the one value that is not one.
+     */
+    public function testDocumentationEmailAddressesAreRealValues(): void
+    {
+        self::assertFalse(CredentialKeys::isPlaceholder('test@example.com'));
+        self::assertFalse(CredentialKeys::isPlaceholder('demo@example.org'));
     }
 
     public function testDetectsNoiseValues(): void

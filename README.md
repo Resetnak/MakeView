@@ -59,14 +59,26 @@ READMEs, so don't point it at private projects on a public server.
 - Services come from `compose.yml` (plus `compose.override.yml` when present).
   A Traefik ``Host(`app.localhost`)`` label wins over a published port, so you
   get the address you'd actually type into a browser.
-- README links are paired with nearby credentials — from a markdown table, from
-  `user:` / `heslo:` lines, or from `export KEY=value` inside a fenced block.
-  Both Czech and English labels count, and `Email` is read as the username: a
-  `| Email | Heslo | Role |` table yields one entry per account. Badges are
-  ignored, and a bare URL is labelled with its port so three services on
-  localhost stay apart.
-  Pairing never crosses a heading, and each entry shows the section it came from
-  so a wrong guess is easy to spot.
+- README links are paired with nearby credentials. People write those in
+  whatever words and whatever language they document in, so the parser reads:
+  - markdown tables, both the usual `| Email | Heslo | Role |` shape (one entry
+    per account) and the transposed `| Field | Value |` one used for a single
+    test account;
+  - definition lines — `user: admin`, `**Heslo:** x`, `Username — admin` — and
+    prose that skips the colon, as in ``uživatel `admin`, heslo `s3cret` `` or
+    "(default password `admin`)", where the backticks mark the literal;
+  - fenced blocks, read as `export KEY=value`, as YAML (`password: postgres`),
+    and as JSON (the `curl` login example);
+  - basic auth in a URL, which is reported and then stripped out of the link.
+
+  The credential words are multilingual (CZ/SK/EN/DE/PL/ES/PT/FR/IT), and
+  `Email` counts as a username. Badges are ignored, and a bare URL is labelled
+  with its port so three services on localhost stay apart. Pairing never crosses
+  a heading, and each entry shows the section it came from so a wrong guess is
+  easy to spot.
+- Values that are obviously stand-ins — `changeme`, `<TOKEN>`, `your-api-key`,
+  `sk-your-openai-api-key` — are shown but marked as placeholders rather than
+  hidden, so a README that documents `changeme` visibly documents `changeme`.
 - Passwords are masked on screen with a reveal toggle. **This is a
   screen-sharing convenience, not a security feature** — the values are in the
   page source, and anyone with the page has them. Same as before: run this on

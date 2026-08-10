@@ -82,6 +82,13 @@ final class CredentialKeys
             return true;
         }
 
+        // An e-mail address is already a complete value, and the documentation
+        // domains are literally named example.com — the word in them describes
+        // the domain, not the reader's homework.
+        if (preg_match('/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i', $trimmed) === 1) {
+            return false;
+        }
+
         return preg_match(self::PLACEHOLDER_WORD_PATTERN, $trimmed) === 1;
     }
 
