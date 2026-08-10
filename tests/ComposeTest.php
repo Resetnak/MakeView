@@ -85,6 +85,64 @@ final class ComposeTest extends TestCase
         self::assertNull($this->byName($services, 'cache')->url);
     }
 
+    public function testNegativePublishedPortProducesNoUrl(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            ports:
+              - "-1:80"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testOutOfRangePublishedPortProducesNoUrl(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            ports:
+              - "99999:80"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testPortRangeSyntaxProducesNoUrl(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            ports:
+              - "8000-8005:8000-8005"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testNonHttpTargetPortWithoutExplicitTargetIsRecognizedFromPublished(): void
+    {
+        // Long syntax with only "published" set (no "target") should still be
+        // treated as a database port when the published port itself is well-known.
+        $yaml = <<<'YAML'
+        services:
+          db:
+            ports:
+              - published: 5432
+            environment:
+              POSTGRES_PASSWORD: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'db')->url);
+    }
+
     // ---- URLs from Traefik ----
 
     public function testTraefikHostLabelProducesUrl(): void
@@ -116,6 +174,21 @@ final class ComposeTest extends TestCase
         $services = Compose::parse($yaml);
 
         self::assertSame('https://app.localhost', $this->byName($services, 'app')->url);
+    }
+
+    public function testTlsLabelSetToFalseDoesNotSelectHttpsScheme(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`app.localhost`)"
+              - "traefik.http.routers.app.tls=false"
+        YAML;
+
+        $services = Compose::parse($yaml);
+
+        self::assertSame('http://app.localhost', $this->byName($services, 'app')->url);
     }
 
     public function testWebsecureEntrypointSelectsHttpsScheme(): void
@@ -167,6 +240,49 @@ final class ComposeTest extends TestCase
 
         // Ambiguous which host the path belongs to; first host, no path.
         self::assertSame('http://a.localhost', $this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testHostLabelRejectsInjectedScriptCharacters(): void
+    {
+        // Carries a credential so it still earns a row despite having no URL;
+        // the point under test is that the malicious rule yields no URL.
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`a\"><script>alert(1)</script>`)"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->urlSource);
+    }
+
+    public function testHostLabelRejectsUserinfoPhishingHost(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`good.localhost@evil.example.com`)"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testPathPrefixLabelRejectsInjectedAttributeCharacters(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`ok.localhost`) && PathPrefix(`/x\" onmouseover=alert(1) `)"
+        YAML;
+
+        self::assertSame('http://ok.localhost', $this->byName(Compose::parse($yaml), 'app')->url);
     }
 
     public function testLabelsAsMapAreSupported(): void

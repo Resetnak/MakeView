@@ -263,14 +263,32 @@ final class Compose
      */
     private static function traefikUrl(array $labels): ?string
     {
+        // When a service defines multiple routers, the first one whose label
+        // key is encountered (map iteration / list order after
+        // labelsToMap()) wins; there is no priority or weight comparison.
+        // This mirrors YAML declaration order, not Traefik's own routing
+        // precedence — acceptable here since this only picks a URL to
+        // display, not an actual routing decision.
         foreach ($labels as $key => $rule) {
             if (preg_match('/^traefik\.http\.routers\.([^.]+)\.rule$/', $key, $m) !== 1) {
                 continue;
             }
 
-            preg_match_all('/Host\(`([^`]+)`\)/', $rule, $hosts);
-            if ($hosts[1] === []) {
+            // Any `Host(...)` occurrence at all — including ones whose contents
+            // fail the strict charset below — makes this rule host-based. If it
+            // fails the strict match, we must yield no URL rather than fall
+            // through to a different, unrelated URL source for this router.
+            if (preg_match_all('/Host\(`([^`]*)`\)/', $rule, $anyHosts) === 0) {
                 continue;
+            }
+
+            // Restrict captured hostnames to legal hostname characters only.
+            // Rejects userinfo (`@`), markup/quote injection, and anything else
+            // that isn't a valid DNS label so no attacker-controlled substring
+            // ever reaches a rendered `<a href>`.
+            preg_match_all('/Host\(`([A-Za-z0-9.\-]+)`\)/', $rule, $hosts);
+            if ($hosts[1] === [] || count($hosts[1]) !== count($anyHosts[1])) {
+                return null;
             }
 
             $router = $m[1];
@@ -279,7 +297,7 @@ final class Compose
 
             // Only unambiguous single-host rules carry their path prefix.
             if (count($hosts[1]) === 1
-                && preg_match('/PathPrefix\(`([^`]+)`\)/', $rule, $path) === 1
+                && preg_match('/PathPrefix\(`([A-Za-z0-9._\-\/]+)`\)/', $rule, $path) === 1
             ) {
                 $url .= '/' . ltrim($path[1], '/');
             }
@@ -293,7 +311,8 @@ final class Compose
     /** @param array<string, string> $labels */
     private static function traefikScheme(array $labels, string $router): string
     {
-        if (isset($labels["traefik.http.routers.{$router}.tls"])) {
+        $tls = mb_strtolower($labels["traefik.http.routers.{$router}.tls"] ?? '');
+        if ($tls !== '' && $tls !== 'false') {
             return 'https';
         }
 
@@ -319,7 +338,12 @@ final class Compose
             if ($published === null) {
                 continue;
             }
-            if ($target !== null && in_array($target, self::NON_HTTP_PORTS, true)) {
+
+            // A well-known database/queue/mail port disqualifies the URL.
+            // When no target is given (e.g. long syntax with only
+            // "published" set), judge the published port itself.
+            $portToCheck = $target ?? $published;
+            if (in_array($portToCheck, self::NON_HTTP_PORTS, true)) {
                 continue;
             }
 
@@ -329,16 +353,20 @@ final class Compose
         return null;
     }
 
+    /** Valid TCP/UDP port range. */
+    private const MIN_PORT = 1;
+    private const MAX_PORT = 65535;
+
     /**
      * @return array{0: ?int, 1: ?int} [published, target]
      */
     private static function splitPort(mixed $entry): array
     {
         if (is_array($entry)) {
-            $published = isset($entry['published']) ? (int) $entry['published'] : null;
-            $target = isset($entry['target']) ? (int) $entry['target'] : null;
+            $published = isset($entry['published']) ? self::toPort($entry['published']) : null;
+            $target = isset($entry['target']) ? self::toPort($entry['target']) : null;
 
-            return [$published ?: null, $target];
+            return [$published, $target];
         }
 
         if (!is_string($entry) && !is_int($entry)) {
@@ -353,9 +381,29 @@ final class Compose
         // "8080:80"       -> published:target
         // "127.0.0.1:8080:80" -> host:published:target
         return match (count($parts)) {
-            2 => [(int) $parts[0] ?: null, (int) $parts[1]],
-            3 => [(int) $parts[1] ?: null, (int) $parts[2]],
+            2 => [self::toPort($parts[0]), self::toPort($parts[1])],
+            3 => [self::toPort($parts[1]), self::toPort($parts[2])],
             default => [null, null],
         };
+    }
+
+    /**
+     * Parse a strictly numeric, in-range port. Rejects range syntax
+     * (e.g. "8000-8005"), negative numbers, and anything above 65535 —
+     * none of those describe a single browser-reachable localhost URL.
+     */
+    private static function toPort(mixed $value): ?int
+    {
+        if (!is_string($value) && !is_int($value)) {
+            return null;
+        }
+
+        if (is_string($value) && preg_match('/^\d+$/', $value) !== 1) {
+            return null;
+        }
+
+        $port = (int) $value;
+
+        return $port >= self::MIN_PORT && $port <= self::MAX_PORT ? $port : null;
     }
 }
