@@ -44,33 +44,24 @@ final class Readme
     private static function sections(string $markdown): array
     {
         $lines = preg_split('/\R/', $markdown) ?: [];
+        $fence = self::fenceMask($lines);
 
         $sections = [];
         $heading = '';
         $body = [];
-        $inFence = false;
 
-        foreach ($lines as $line) {
-            $isFenceMarker = preg_match('/^\s*(```|~~~)/', $line) === 1;
-            if ($isFenceMarker) {
-                $inFence = !$inFence;
-            }
-
+        foreach ($lines as $i => $line) {
             $isHeading = preg_match('/^#{1,6}\s+(.+?)\s*#*\s*$/', $line, $m) === 1;
 
-            // An unterminated fence (opened but never closed) must not be allowed to
-            // suppress heading detection for the rest of the document — that would let
-            // a credential from one section (e.g. Production) silently merge into the
-            // previous section's (e.g. Development) group. A well-formed ATX heading
-            // at column 0 closes any still-open fence: real fence content essentially
-            // never happens to look like a heading line, and a fence that swallowed a
-            // whole later section undetected is far more dangerous than the rare false
-            // positive of a `# comment` line inside a snippet being read as a heading.
-            if ($inFence && !$isFenceMarker && $isHeading) {
-                $inFence = false;
-            }
-
-            if (!$inFence && !$isFenceMarker && $isHeading) {
+            // Lines inside a matched (properly opened-and-closed) fence never open a
+            // new section, no matter what they look like: a shell `#` comment inside
+            // a ```sh block must not be read as a heading. A fence marker line itself
+            // is also never a heading boundary. Only an *unterminated* fence — one
+            // that never finds its matching closer — stops suppressing content, so a
+            // credential in a later section (e.g. Production) can't silently merge
+            // into an earlier one (e.g. Development) just because someone forgot a
+            // closing fence.
+            if (!$fence['insideClosedFence'][$i] && !$fence['isMarkerLine'][$i] && $isHeading) {
                 $sections[] = ['heading' => $heading, 'body' => implode("\n", $body)];
                 $heading = trim(self::stripInlineMarkdown($m[1]));
                 $body = [];
@@ -83,6 +74,71 @@ final class Readme
         $sections[] = ['heading' => $heading, 'body' => implode("\n", $body)];
 
         return array_values(array_filter($sections, fn ($s) => trim($s['body']) !== '' || $s['heading'] !== ''));
+    }
+
+    /**
+     * Two-pass fence classification shared by sections() and pairByProximity() so
+     * both agree on what "inside a fence" means. A fence opener (``` or ~~~) is
+     * only "closed" by a same-or-longer marker of the *same* character, per
+     * CommonMark; pass one finds those matched pairs, pass two turns them into a
+     * per-line mask. An opener with no matching closer is left unmatched: it must
+     * not suppress detection for the rest of the document (see sections() above),
+     * so every line after an unterminated opener is reported as outside any fence.
+     *
+     * @param list<string> $lines
+     * @return array{insideClosedFence: list<bool>, isMarkerLine: list<bool>}
+     */
+    private static function fenceMask(array $lines): array
+    {
+        $count = count($lines);
+        $insideClosedFence = array_fill(0, $count, false);
+        $isMarkerLine = array_fill(0, $count, false);
+
+        $openChar = null;
+        $openLength = 0;
+        $openIndex = null;
+
+        foreach ($lines as $i => $line) {
+            if (preg_match('/^\s*(`{3,}|~{3,})/', $line, $m) !== 1) {
+                continue;
+            }
+
+            $char = $m[1][0];
+            $length = strlen($m[1]);
+
+            if ($openIndex === null) {
+                // Opening a new fence.
+                $openChar = $char;
+                $openLength = $length;
+                $openIndex = $i;
+                $isMarkerLine[$i] = true;
+                continue;
+            }
+
+            if ($char === $openChar && $length >= $openLength) {
+                // Matching closer: mark every line strictly between opener and
+                // closer as inside a closed fence, then reset for the next fence.
+                $isMarkerLine[$i] = true;
+                for ($j = $openIndex + 1; $j < $i; $j++) {
+                    $insideClosedFence[$j] = true;
+                }
+                $openChar = null;
+                $openLength = 0;
+                $openIndex = null;
+                continue;
+            }
+
+            // A ``` or ~~~ line of the wrong type/length while already inside a
+            // fence is just fence content (e.g. a nested example), not a marker.
+        }
+
+        // An opener with no matching closer never suppresses anything: leave the
+        // rest of the document, including the opener line itself, unmasked.
+        if ($openIndex !== null) {
+            $isMarkerLine[$openIndex] = false;
+        }
+
+        return ['insideClosedFence' => $insideClosedFence, 'isMarkerLine' => $isMarkerLine];
     }
 
     /** @return Link[] */
@@ -234,15 +290,20 @@ final class Readme
     private static function pairByProximity(string $heading, string $body): array
     {
         $lines = preg_split('/\R/', $body) ?: [];
+        $fence = self::fenceMask($lines);
 
         /** @var list<array{link: ?Link, credentials: list<Credential>, sources: list<string>}> $groups */
         $groups = [];
         $current = null;
-        $inFence = false;
 
-        foreach ($lines as $line) {
-            if (preg_match('/^\s*(```|~~~)/', $line) === 1) {
-                $inFence = !$inFence;
+        foreach ($lines as $i => $line) {
+            // Fence classification comes from the same two-pass fenceMask() that
+            // sections() uses, so both agree on what's "inside a fence" — a naive
+            // per-line toggle here previously desynced from sections() whenever a
+            // fence contained a line that looked like a heading.
+            $inFence = $fence['insideClosedFence'][$i];
+
+            if ($fence['isMarkerLine'][$i]) {
                 continue;
             }
 

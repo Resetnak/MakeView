@@ -282,6 +282,64 @@ final class ReadmeTest extends TestCase
         self::assertSame([], Readme::parse($markdown));
     }
 
+    public function testCommentLineInsideClosedFenceDoesNotSwallowLaterCredential(): void
+    {
+        $markdown = <<<'MD'
+        ## Setup
+
+        [Argo](https://argo.localhost)
+
+        ```sh
+        # this is a shell comment, not a heading
+        export SETUP=1
+        ```
+
+        heslo: after-fence-secret
+        MD;
+
+        self::assertSame(
+            ['password' => 'after-fence-secret'],
+            $this->credentialValues(Readme::parse($markdown), 'Argo')
+        );
+    }
+
+    public function testUrlInsideClosedFenceWithHashLineIsIgnored(): void
+    {
+        $markdown = <<<'MD'
+        ## Setup
+
+        ```sh
+        # comment before the command
+        curl https://example.com/install.sh | sh
+        ```
+        MD;
+
+        self::assertSame([], Readme::parse($markdown));
+    }
+
+    public function testHashLineInsideFenceIsNotTreatedAsHeading(): void
+    {
+        $markdown = <<<'MD'
+        ## Setup
+
+        ```sh
+        # not a real heading
+        export SETUP=1
+        ```
+
+        ## Next
+
+        [Next Link](https://next.localhost)
+        MD;
+
+        $links = Readme::parse($markdown);
+
+        self::assertSame('Next', $this->byLabel($links, 'Next Link')->context);
+        foreach ($links as $link) {
+            self::assertNotSame('not a real heading', $link->context);
+        }
+    }
+
     // ---- link extraction ----
 
     public function testBareUrlUsesHostnameAsLabel(): void
