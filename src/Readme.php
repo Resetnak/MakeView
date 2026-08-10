@@ -221,7 +221,7 @@ final class Readme
     {
         $lines = preg_split('/\R/', $body) ?: [];
 
-        /** @var list<array{link: ?Link, credentials: list<Credential>}> $groups */
+        /** @var list<array{link: ?Link, credentials: list<Credential>, sources: list<string>}> $groups */
         $groups = [];
         $current = null;
         $inFence = false;
@@ -234,7 +234,7 @@ final class Readme
 
             if (!$inFence) {
                 foreach (self::linksIn($line, $heading) as $link) {
-                    $groups[] = ['link' => $link, 'credentials' => []];
+                    $groups[] = ['link' => $link, 'credentials' => [], 'sources' => []];
                     $current = count($groups) - 1;
                 }
             }
@@ -245,29 +245,50 @@ final class Readme
             }
 
             if ($current === null) {
-                $groups[] = ['link' => null, 'credentials' => []];
+                $groups[] = ['link' => null, 'credentials' => [], 'sources' => []];
                 $current = count($groups) - 1;
             }
 
             $groups[$current]['credentials'][] = $credential;
+            $groups[$current]['sources'][] = $inFence ? 'env' : 'definition';
         }
 
         $links = [];
         foreach ($groups as $group) {
             $link = $group['link'];
+            $confidence = self::confidenceFor($group['sources']);
 
             if ($link === null) {
                 if ($group['credentials'] === [] || $heading === '') {
                     continue;
                 }
-                $links[] = new Link($heading, null, $heading, 'proximity', $group['credentials']);
+                $links[] = new Link($heading, null, $heading, $confidence, $group['credentials']);
                 continue;
             }
 
-            $links[] = $group['credentials'] === [] ? $link : $link->withCredentials($group['credentials']);
+            if ($group['credentials'] === []) {
+                $links[] = $link;
+                continue;
+            }
+
+            $links[] = new Link($link->label, $link->url, $link->context, $confidence, $group['credentials']);
         }
 
         return $links;
+    }
+
+    /**
+     * How the credentials in one group were read, from the least reliable source
+     * in it. A group mixing definition lines and env exports is only as trustworthy
+     * as a plain proximity guess, so it degrades rather than claiming either.
+     *
+     * @param list<string> $sources
+     */
+    private static function confidenceFor(array $sources): string
+    {
+        $distinct = array_unique($sources);
+
+        return count($distinct) === 1 ? reset($distinct) : 'proximity';
     }
 
     /** @return Link[] */

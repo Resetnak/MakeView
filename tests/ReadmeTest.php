@@ -82,6 +82,36 @@ final class ReadmeTest extends TestCase
         self::assertSame(['user' => 'admin', 'password' => 'dev-secret'], $this->credentialValues($links, 'the dashboard'));
     }
 
+    public function testDefinitionLineCredentialsAreMarkedAsRead(): void
+    {
+        $markdown = "## Access\n\n[App](https://app.localhost)\n\nuser: admin\nheslo: p4ss\n";
+
+        self::assertSame('definition', $this->byLabel(Readme::parse($markdown), 'App')->confidence);
+    }
+
+    public function testFencedEnvCredentialsAreMarkedAsRead(): void
+    {
+        $markdown = "## Access\n\n[App](https://app.localhost)\n\n```sh\nexport APP_PASSWORD=p4ss\n```\n";
+
+        self::assertSame('env', $this->byLabel(Readme::parse($markdown), 'App')->confidence);
+    }
+
+    public function testMixedCredentialSourcesDegradeToProximity(): void
+    {
+        // Definition line and env export in one group: neither reading is more
+        // trustworthy than a plain guess, so the pair must not claim either.
+        $markdown = "## Access\n\n[App](https://app.localhost)\n\nuser: admin\n\n```sh\nexport APP_PASSWORD=p4ss\n```\n";
+
+        self::assertSame('proximity', $this->byLabel(Readme::parse($markdown), 'App')->confidence);
+    }
+
+    public function testLinkWithoutCredentialsStaysProximity(): void
+    {
+        $markdown = "## Access\n\n[App](https://app.localhost)\n";
+
+        self::assertSame('proximity', $this->byLabel(Readme::parse($markdown), 'App')->confidence);
+    }
+
     public function testCzechAndEnglishCredentialKeywordsBothWork(): void
     {
         $markdown = "## Access\n\n[App](https://app.localhost)\n\nuživatel: karel\npassword: tajne\n";
