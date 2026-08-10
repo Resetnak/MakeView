@@ -456,7 +456,7 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
           <td class="svc-url">
             <?php if ($s->url !== null): ?>
               <?= url_link($s->url) ?>
-              <span class="hint"><?= $s->urlSource === 'traefik' ? 'traefik' : 'localhost' ?></span>
+              <span class="hint"><?= h($s->urlSource === 'traefik' ? 'traefik' : 'localhost') ?></span>
             <?php else: ?>
               <span class="hint">—</span>
             <?php endif; ?>
