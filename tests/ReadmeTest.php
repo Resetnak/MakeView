@@ -68,7 +68,7 @@ final class ReadmeTest extends TestCase
         | --verbose | Print more |
         MD;
 
-        self::assertSame([], Readme::parse($markdown));
+        self::assertEmpty(Readme::parse($markdown));
     }
 
     public function testDistinctUrlLessTableRowsInTheSameSectionAreNotDeduplicatedAway(): void
@@ -279,7 +279,7 @@ final class ReadmeTest extends TestCase
         ```
         MD;
 
-        self::assertSame([], Readme::parse($markdown));
+        self::assertEmpty(Readme::parse($markdown));
     }
 
     public function testCommentLineInsideClosedFenceDoesNotSwallowLaterCredential(): void
@@ -314,7 +314,7 @@ final class ReadmeTest extends TestCase
         ```
         MD;
 
-        self::assertSame([], Readme::parse($markdown));
+        self::assertEmpty(Readme::parse($markdown));
     }
 
     public function testHashLineInsideFenceIsNotTreatedAsHeading(): void
@@ -361,7 +361,7 @@ final class ReadmeTest extends TestCase
     {
         $markdown = "## Contact\n\n[Mail](mailto:a@b.cz) and [Bad](javascript:alert(1))\n";
 
-        self::assertSame([], Readme::parse($markdown));
+        self::assertEmpty(Readme::parse($markdown));
     }
 
     public function testDuplicateUrlsAreDeduplicated(): void
@@ -518,5 +518,284 @@ final class ReadmeTest extends TestCase
             ['user' => 'admin', 'password' => 'grafana-secret'],
             $this->credentialValues(Readme::parse($markdown), 'Grafana'),
         );
+    }
+
+    // ---- inline pairs in prose ----
+
+    /**
+     * The commonest way a README states a login is one sentence, not a table:
+     * "user X, password Y". A trailing remark after the value is normal, so the
+     * value must be read as a token rather than "everything to end of line".
+     */
+    public function testInlinePairOnOneProseLineIsRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Keycloak
+
+        - Admin: uživatel `admin`, heslo `s3cret` (viz docker-compose).
+        MD;
+
+        self::assertSame(
+            ['user' => 'admin', 'password' => 's3cret'],
+            $this->credentialValues(Readme::parse($markdown), 'Keycloak'),
+        );
+    }
+
+    public function testValueIsNotSwallowedTogetherWithTheRestOfTheSentence(): void
+    {
+        $markdown = <<<'MD'
+        ## App
+
+        Password: hunter2 (change this before deploying).
+        MD;
+
+        self::assertSame(
+            ['password' => 'hunter2'],
+            $this->credentialValues(Readme::parse($markdown), 'App'),
+        );
+    }
+
+    /** A quoted value may contain spaces; only unquoted values must not. */
+    public function testQuotedValueMayContainSpaces(): void
+    {
+        $markdown = <<<'MD'
+        ## App
+
+        Password: "correct horse battery" and then some prose.
+        MD;
+
+        self::assertSame(
+            ['password' => 'correct horse battery'],
+            $this->credentialValues(Readme::parse($markdown), 'App'),
+        );
+    }
+
+    public function testDescriptivePhrasePrecedingTheValueIsRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Monitoring
+
+        Grafana runs on <http://localhost:3000> (default password `admin`).
+        MD;
+
+        self::assertSame(
+            ['password' => 'admin'],
+            $this->credentialValues(Readme::parse($markdown), 'localhost:3000'),
+        );
+    }
+
+    /** German and Polish READMEs state the same thing with their own words. */
+    public function testGermanAndPolishLabelsAreRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Zugang
+
+        Benutzername: `admin`
+        Kennwort: `geheim`
+        MD;
+
+        self::assertSame(
+            ['user' => 'admin', 'password' => 'geheim'],
+            $this->credentialValues(Readme::parse($markdown), 'Zugang'),
+        );
+    }
+
+    public function testSlashSeparatedPairWithoutLabelsIsRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Local dev
+
+        Sign in with `admin@local.test` / `supersetdev`.
+        MD;
+
+        self::assertSame(
+            ['user' => 'admin@local.test', 'password' => 'supersetdev'],
+            $this->credentialValues(Readme::parse($markdown), 'Local dev'),
+        );
+    }
+
+    // ---- fenced blocks ----
+
+    /**
+     * A plain fence is where people paste the test account. The same
+     * `label: value` lines that are read outside a fence must be read inside
+     * one too — before this, only KEY=value was.
+     */
+    public function testDefinitionLinesInsideAPlainFenceAreRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Testovací uživatel
+
+        ```
+        Email: admin@test.com
+        Heslo: Admin123!
+        ```
+        MD;
+
+        self::assertSame(
+            ['user' => 'admin@test.com', 'password' => 'Admin123!'],
+            $this->credentialValues(Readme::parse($markdown), 'Testovací uživatel'),
+        );
+    }
+
+    public function testNestedYamlKeysInsideAFenceAreRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Konfigurace
+
+        ```yaml
+        database:
+          user: postgres
+          password: postgres
+        ```
+        MD;
+
+        self::assertSame(
+            ['user' => 'postgres', 'password' => 'postgres'],
+            $this->credentialValues(Readme::parse($markdown), 'Konfigurace'),
+        );
+    }
+
+    /**
+     * A `curl` login example states an account even though nothing on the line
+     * looks like a credential line. The URL inside the fence stays a command
+     * argument rather than becoming a link, so the account is filed under the
+     * heading it was documented beneath.
+     */
+    public function testJsonPayloadInsideAFenceIsRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Login
+
+        ```bash
+        curl -X POST http://localhost:8090/v1/auth/login \
+          -d '{"email":"test@example.com","password":"Test1234!"}'
+        ```
+        MD;
+
+        self::assertSame(
+            ['user' => 'test@example.com', 'password' => 'Test1234!'],
+            $this->credentialValues(Readme::parse($markdown), 'Login'),
+        );
+    }
+
+    // ---- table orientation ----
+
+    /**
+     * A two-column table often puts the roles in the first column rather than
+     * the header: `| Field | Value |` over rows `Email` / `Password`. Read
+     * down the first column when the header itself names no role.
+     */
+    public function testTwoColumnFieldValueTableIsReadByItsFirstColumn(): void
+    {
+        $markdown = <<<'MD'
+        ## Test account
+
+        | Field    | Value                  |
+        |----------|------------------------|
+        | Email    | `test@example.com`     |
+        | Password | `Test1234!`            |
+        MD;
+
+        self::assertSame(
+            ['user' => 'test@example.com', 'password' => 'Test1234!'],
+            $this->credentialValues(Readme::parse($markdown), 'Test account'),
+        );
+    }
+
+    // ---- basic-auth URLs ----
+
+    /**
+     * Credentials embedded in a URL are credentials. They must also be stripped
+     * from the href: the dashboard renders the URL as a clickable link, and a
+     * password does not belong in an anchor a click can leak to a referrer.
+     */
+    public function testBasicAuthCredentialsAreExtractedAndStrippedFromTheUrl(): void
+    {
+        $markdown = <<<'MD'
+        ## Admin
+
+        Otevři http://admin:secret123@localhost:8080/panel
+        MD;
+
+        $links = Readme::parse($markdown);
+        $link = $this->byLabel($links, 'localhost:8080/panel');
+
+        self::assertSame('http://localhost:8080/panel', $link->url);
+        self::assertSame(
+            ['user' => 'admin', 'password' => 'secret123'],
+            $this->credentialValues($links, 'localhost:8080/panel'),
+        );
+    }
+
+    // ---- noise resistance ----
+
+    /**
+     * Broadening detection must not turn ordinary prose into credentials.
+     * These lines all contain a credential word and no secret whatsoever.
+     */
+    public function testProseMentioningCredentialWordsYieldsNothing(): void
+    {
+        $markdown = <<<'MD'
+        ## Notes
+
+        Run the update for user-scoped plugins only.
+        The API is protected by a secret delivered via an HTTP-only cookie.
+        See the section about password rotation for details.
+        Authentication uses JWT access tokens and refresh tokens.
+        MD;
+
+        self::assertEmpty(Readme::parse($markdown));
+    }
+
+    public function testEnvVarDocumentationTableIsNotReadAsCredentials(): void
+    {
+        $markdown = <<<'MD'
+        ## Konfigurace
+
+        | Proměnná | Popis |
+        |----------|-------|
+        | `JWT_SECRET` | Secret pro JWT podpis (min 32 chars) |
+        | `API_KEY` | Plaintext API key (hashed at startup) |
+        MD;
+
+        self::assertEmpty(Readme::parse($markdown));
+    }
+
+    public function testShellCommandThatOnlyNamesAVariableYieldsNothing(): void
+    {
+        $markdown = <<<'MD'
+        ## Setup
+
+        ```bash
+        echo $OPENAI_API_KEY
+        openssl passwd -apr1
+        ```
+        MD;
+
+        self::assertEmpty(Readme::parse($markdown));
+    }
+
+    /**
+     * A setup snippet exports a placeholder rather than a real secret. The
+     * value is still reported — placeholders are flagged, not dropped, so that
+     * a README documenting `changeme` is visibly documenting `changeme` — but
+     * it must be marked as one.
+     */
+    public function testPlaceholderSecretsInASetupSnippetAreFlagged(): void
+    {
+        $markdown = <<<'MD'
+        ## Setup
+
+        ```bash
+        export OPENAI_API_KEY=sk-your-openai-api-key
+        ```
+        MD;
+
+        $credentials = $this->byLabel(Readme::parse($markdown), 'Setup')->credentials;
+
+        self::assertCount(1, $credentials);
+        self::assertSame('sk-your-openai-api-key', $credentials[0]->value);
+        self::assertTrue($credentials[0]->isPlaceholder);
     }
 }

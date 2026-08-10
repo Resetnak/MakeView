@@ -179,6 +179,15 @@ final class Readme
             $columns = self::classifyColumns($header);
 
             if (!isset($columns['label']) || (!isset($columns['user']) && !isset($columns['password']))) {
+                // The header named no role, but a two-column table often puts
+                // the roles in the first column instead: `| Field | Value |`
+                // over rows `Email` and `Password`. Read it sideways before
+                // giving up on it.
+                $transposed = self::transposedTableLink($lines, $i, $heading);
+                if ($transposed !== null) {
+                    $links[] = $transposed;
+                }
+
                 continue;
             }
 
@@ -251,6 +260,67 @@ final class Readme
         }
 
         return $columns;
+    }
+
+    /**
+     * Read a table whose roles run down the first column rather than across the
+     * header — `| Field | Value |` over rows `Email` / `Password`, the shape a
+     * README uses to describe one single test account.
+     *
+     * Only two-column tables qualify. A wider one lists many things and its
+     * header is the description of them; reading it sideways would pair a role
+     * with whichever column happened to come second.
+     *
+     * @param list<string> $lines
+     */
+    private static function transposedTableLink(array $lines, int $headerIndex, string $heading): ?Link
+    {
+        if (count(self::tableCells($lines[$headerIndex])) !== 2) {
+            return null;
+        }
+
+        $credentials = [];
+
+        for ($i = $headerIndex + 2; $i < count($lines); $i++) {
+            if (!str_contains($lines[$i], '|')) {
+                break;
+            }
+
+            $cells = self::tableCells($lines[$i]);
+            if (count($cells) !== 2) {
+                break;
+            }
+
+            [$role, $value] = $cells;
+            $value = trim($value);
+
+            if ($value === '' || CredentialKeys::isNoise($value)) {
+                continue;
+            }
+
+            // The role cell must be the word itself, not a sentence mentioning
+            // it: a `| Proměnná | Popis |` table documents variables, and its
+            // descriptions are prose, not secrets.
+            if (preg_match('/^\s*(' . CredentialPhrases::WORD_PATTERN . ')\s*$/iu', $role) !== 1) {
+                continue;
+            }
+
+            $kind = CredentialPhrases::kindFor($role);
+            $credentials[] = new Credential(
+                $kind,
+                $kind === 'user' ? 'uživatel' : ($kind === 'token' ? 'token' : 'heslo'),
+                $value,
+                CredentialKeys::isPlaceholder($value),
+            );
+        }
+
+        // One lone value is not an account; it is a row that happened to be
+        // named "password". Require a pair before believing the table.
+        if (count($credentials) < 2 || $heading === '') {
+            return null;
+        }
+
+        return new Link($heading, null, $heading, 'table', $credentials);
     }
 
     /**
@@ -340,8 +410,11 @@ final class Readme
                 }
             }
 
-            $credential = $inFence ? self::envCredentialIn($line) : self::definitionCredentialIn($credentialSource);
-            if ($credential === null) {
+            $credentials = $inFence
+                ? self::fencedCredentialsIn($line)
+                : self::definitionCredentialsIn($credentialSource);
+
+            if ($credentials === []) {
                 continue;
             }
 
@@ -350,8 +423,10 @@ final class Readme
                 $current = count($groups) - 1;
             }
 
-            $groups[$current]['credentials'][] = $credential;
-            $groups[$current]['sources'][] = $inFence ? 'env' : 'definition';
+            foreach ($credentials as $credential) {
+                $groups[$current]['credentials'][] = $credential;
+                $groups[$current]['sources'][] = $inFence ? 'env' : 'definition';
+            }
         }
 
         $links = [];
@@ -372,7 +447,17 @@ final class Readme
                 continue;
             }
 
-            $links[] = new Link($link->label, $link->url, $link->context, $confidence, $group['credentials']);
+            // A link may already carry credentials of its own — basic-auth
+            // taken out of its URL. Those are the strongest evidence there is
+            // (they were literally part of the address), so they are kept
+            // alongside whatever the surrounding lines contributed.
+            $links[] = new Link(
+                $link->label,
+                $link->url,
+                $link->context,
+                $confidence,
+                [...$link->credentials, ...$group['credentials']],
+            );
         }
 
         return $links;
@@ -429,8 +514,9 @@ final class Readme
                     continue;
                 }
 
+                [$url, $basicAuth] = self::splitBasicAuth($url);
                 $label = trim(self::stripInlineMarkdown($match[1]));
-                $links[] = new Link($label !== '' ? $label : self::hostOf($url), $url, $heading, 'proximity', []);
+                $links[] = new Link($label !== '' ? $label : self::hostOf($url), $url, $heading, 'proximity', $basicAuth);
                 $consumed = str_replace($match[0], '', $consumed);
             }
         }
@@ -443,7 +529,8 @@ final class Readme
                     continue;
                 }
 
-                $links[] = new Link(self::hostOf($url), $url, $heading, 'proximity', []);
+                [$url, $basicAuth] = self::splitBasicAuth($url);
+                $links[] = new Link(self::hostOf($url), $url, $heading, 'proximity', $basicAuth);
                 $consumed = str_replace($candidate, '', $consumed);
             }
         }
@@ -451,29 +538,56 @@ final class Readme
         return ['links' => $links, 'residue' => $consumed];
     }
 
-    /** `user: admin`, `**Heslo:** `x``, `Username — admin` */
-    private static function definitionCredentialIn(string $line): ?Credential
+    /**
+     * Every credential stated in prose on one line: `user: admin`,
+     * `**Heslo:** `x``, `Benutzername: admin`, or two pairs in one sentence.
+     *
+     * A line can carry more than one credential, so this returns a list. The
+     * older single-value form could only ever see the first pair, which meant
+     * "uživatel `admin`, heslo `admin`" yielded a username and no password.
+     *
+     * @return list<Credential>
+     */
+    private static function definitionCredentialsIn(string $line): array
     {
-        $clean = self::stripInlineMarkdown($line);
+        $clean = self::stripInlineMarkdown($line, keepBackticks: true);
 
-        $pattern = '/^\s*[-*+]?\s*(' . self::CREDENTIAL_WORDS . ')\s*[:=—–-]\s*(.+?)\s*$/iu';
-        if (preg_match($pattern, $clean, $m) !== 1) {
-            return null;
+        $credentials = CredentialPhrases::inLine($clean);
+        if ($credentials !== []) {
+            return $credentials;
         }
 
-        $value = trim($m[2]);
-        if (CredentialKeys::isNoise($value)) {
-            return null;
+        // No word introduced anything, but a bare `login` / `password` pair
+        // still states an account.
+        return CredentialPhrases::slashSeparatedPair($clean);
+    }
+
+    /**
+     * Credentials inside a fenced block. Three shapes appear there, and all
+     * three are equally common:
+     *
+     *   export ADMIN_PASSWORD=x      shell, the original case
+     *   password: postgres           YAML config, or a pasted test account
+     *   {"password":"x"}             a curl example
+     *
+     * Before this, only the first was read, so a README that pasted its test
+     * account into a plain ``` block reported nothing at all.
+     *
+     * @return list<Credential>
+     */
+    private static function fencedCredentialsIn(string $line): array
+    {
+        $env = self::envCredentialIn($line);
+        if ($env !== null) {
+            return [$env];
         }
 
-        $word = mb_strtolower(trim($m[1]));
+        $json = CredentialPhrases::inJson($line);
+        if ($json !== []) {
+            return $json;
+        }
 
-        return new Credential(
-            self::kindForWord($word),
-            $word,
-            $value,
-            CredentialKeys::isPlaceholder($value),
-        );
+        return CredentialPhrases::inLine($line);
     }
 
     /** `export ARGOCD_PASSWORD=x` or `ARGOCD_PASSWORD=x` inside a fenced block */
@@ -532,6 +646,53 @@ final class Readme
     }
 
     /**
+     * Split `http://user:pass@host/path` into a clean URL and the credentials it
+     * carried.
+     *
+     * The credentials are reported like any other, but they are also removed
+     * from the URL itself. The dashboard renders the URL as a clickable anchor,
+     * and a password in an `href` is a password in the referrer, in the browser
+     * history and in every copy of a shared screenshot — visible in ways the
+     * masked credential row deliberately is not.
+     *
+     * @return array{0: string, 1: list<Credential>}
+     */
+    private static function splitBasicAuth(string $url): array
+    {
+        $user = parse_url($url, PHP_URL_USER);
+        if (!is_string($user) || $user === '') {
+            return [$url, []];
+        }
+
+        $password = parse_url($url, PHP_URL_PASS);
+
+        $credentials = [new Credential('user', 'uživatel', urldecode($user), CredentialKeys::isPlaceholder($user))];
+        if (is_string($password) && $password !== '') {
+            $decoded = urldecode($password);
+            $credentials[] = new Credential('password', 'heslo', $decoded, CredentialKeys::isPlaceholder($decoded));
+        }
+
+        // Rebuild without the userinfo part. Anything we cannot rebuild safely
+        // keeps its original URL rather than being silently mangled.
+        $host = parse_url($url, PHP_URL_HOST);
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+        if (!is_string($host) || !is_string($scheme)) {
+            return [$url, $credentials];
+        }
+
+        $port = parse_url($url, PHP_URL_PORT);
+        $clean = $scheme . '://' . $host . (is_int($port) ? ':' . $port : '')
+            . (parse_url($url, PHP_URL_PATH) ?: '');
+
+        $query = parse_url($url, PHP_URL_QUERY);
+        if (is_string($query) && $query !== '') {
+            $clean .= '?' . $query;
+        }
+
+        return [$clean, $credentials];
+    }
+
+    /**
      * Label for a link that carries no text of its own. The port is part of it:
      * a README that lists http://localhost:4200, :4201 and :4202 describes three
      * different services, and labelling all three "localhost" makes the list
@@ -558,9 +719,15 @@ final class Readme
         return $host;
     }
 
-    private static function stripInlineMarkdown(string $text): string
+    /**
+     * @param bool $keepBackticks Credential detection needs them: a backticked
+     *                            value may contain spaces precisely because the
+     *                            backticks delimit it, so stripping them first
+     *                            would make `heslo: `two words`` unreadable.
+     */
+    private static function stripInlineMarkdown(string $text, bool $keepBackticks = false): string
     {
-        return trim((string) preg_replace('/[`*_]/', '', $text));
+        return trim((string) preg_replace($keepBackticks ? '/[*_]/' : '/[`*_]/', '', $text));
     }
 
     /**

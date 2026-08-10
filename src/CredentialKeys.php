@@ -48,6 +48,17 @@ final class CredentialKeys
         return 'password';
     }
 
+    /**
+     * Words that turn whatever they are attached to into an instruction rather
+     * than a value. A README writing `sk-your-openai-api-key` or `<my-token>` is
+     * telling the reader to substitute their own; the exact spelling varies
+     * endlessly, so this matches the possessive word wherever it appears rather
+     * than trying to enumerate the results.
+     */
+    private const PLACEHOLDER_WORD_PATTERN =
+        '/(?:^|[^a-z0-9])(your|yours|my|mine|own|here|insert|replace|example|sample|dummy|fake|placeholder|xxxx?)'
+        . '(?:[^a-z0-9]|$)/i';
+
     /** A substitution marker or an instruction to the reader — never a real secret. */
     public static function isPlaceholder(string $value): bool
     {
@@ -67,7 +78,11 @@ final class CredentialKeys
             return true;
         }
 
-        return in_array(mb_strtolower($trimmed), self::PLACEHOLDERS, true);
+        if (in_array(mb_strtolower($trimmed), self::PLACEHOLDERS, true)) {
+            return true;
+        }
+
+        return preg_match(self::PLACEHOLDER_WORD_PATTERN, $trimmed) === 1;
     }
 
     /** Too long, or clearly prose rather than a credential. */
