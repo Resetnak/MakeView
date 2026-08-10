@@ -7,8 +7,8 @@ parses their **Makefile targets** (documented `target: ## desc` first), pulls
 straight from `.git` files, no git binary needed), and renders the READMEs
 themselves. Click any command, URL, or credential to copy it.
 
-> UI text is in Czech. No database, no framework, no build step — one PHP file,
-> a handful of small modules, and two Composer packages.
+> UI text is in Czech. No database, no framework, no asset pipeline — one PHP
+> file, a handful of small modules, and two Composer packages.
 
 ![Dashboard (dark mode)](docs/dashboard-dark.png)
 
