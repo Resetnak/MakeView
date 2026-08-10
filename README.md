@@ -3,12 +3,12 @@
 A PHP dashboard for your local projects. It scans a directory of projects,
 parses their **Makefile targets** (documented `target: ## desc` first), pulls
 **services and URLs** out of `compose.yml` (including Traefik hostnames), finds
-**links and credentials** in READMEs, shows **git branch + last activity** (read
-straight from `.git` files, no git binary needed), and renders the READMEs
-themselves. Click any command, URL, or credential to copy it.
+**links and credentials** in READMEs, and shows **git branch + last activity**
+(read straight from `.git` files, no git binary needed). Click any command, URL,
+or credential to copy it.
 
 > UI text is in Czech. No database, no framework, no asset pipeline — one PHP
-> file, a handful of small modules, and two Composer packages.
+> file, a handful of small modules, and a single Composer package.
 
 ![Dashboard (dark mode)](docs/dashboard-dark.png)
 
@@ -52,7 +52,7 @@ READMEs, so don't point it at private projects on a public server.
 - A project is any subdirectory of `MAKEVIEW_DIR` with a `Makefile` or `README.md`.
 - Documented targets (`build: ## Compile the thing`) get descriptions; bare targets are listed too.
 - Dashboard sorts projects by last git activity (`.git/index` mtime); pins are stored in `localStorage`.
-- READMEs render through Parsedown in safe mode; project selection is whitelisted (no path traversal).
+- READMEs are mined for links and credentials, not rendered in full; project selection is whitelisted (no path traversal).
 - Services come from `compose.yml` (plus `compose.override.yml` when present).
   A Traefik ``Host(`app.localhost`)`` label wins over a published port, so you
   get the address you'd actually type into a browser.

@@ -5,7 +5,6 @@
     "license": "MIT",
     "require": {
         "php": ">=8.2",
-        "erusev/parsedown": "^1.7",
         "symfony/yaml": "^6.4"
     },
     "require-dev": {

@@ -10,8 +10,7 @@ require_once __DIR__ . '/vendor/autoload.php';
 use Makeview\Make;
 use Makeview\Project;
 use Makeview\Value\Credential;
-
-error_reporting(E_ALL & ~E_DEPRECATED); // Parsedown 1.7.4 is noisy on PHP 8.4
+use Makeview\Value\Service;
 
 define('ROOT', rtrim(getenv('MAKEVIEW_DIR') ?: '/projects', '/'));
 
@@ -274,26 +273,6 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
     .lctx { display:none; }
   }
 
-  /* README: prose in sans for readability, code stays mono */
-  .readme { margin-top:10px; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-            font-size:15px; }
-  .readme > * { max-width:72ch; }
-  .readme h1,.readme h2,.readme h3 { letter-spacing:-.01em; text-wrap:balance; }
-  .readme h1,.readme h2 { border-bottom:1px solid var(--hairline); padding-bottom:.3em; }
-  .readme img { max-width:100%; height:auto; border-radius:4px; }
-  .readme pre { background:var(--panel); padding:14px 16px; border-radius:var(--r);
-                overflow-x:auto; border:1px solid var(--line); font-size:13px; max-width:none; }
-  .readme code { font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
-                 background:var(--code-bg); padding:.15em .4em; border-radius:3px; font-size:.86em; }
-  .readme pre code { background:none; padding:0; font-size:inherit; }
-  .readme table { border-collapse:collapse; display:block; overflow-x:auto; max-width:none; }
-  .readme table td, .readme table th { border:1px solid var(--line); padding:7px 12px; }
-  .readme a { color:var(--accent); text-underline-offset:3px;
-              text-decoration-color:color-mix(in oklab, var(--accent) 40%, transparent); }
-  .readme a:hover { text-decoration-color:var(--accent); }
-  .readme blockquote { margin:1em 0; padding:2px 16px; border-left:2px solid var(--accent);
-                       color:var(--muted); }
-
   @media (max-width:720px) {
     body { flex-direction:column; }
     /* sidebar collapses into one horizontally scrollable strip */
@@ -441,7 +420,12 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   <?php endif; ?>
 
   <?php
-    $services = Project::services(ROOT . '/' . $sel);
+    // Only services you can actually open are worth a row; a database with
+    // credentials but no browsable URL just adds noise.
+    $services = array_filter(
+      Project::services(ROOT . '/' . $sel),
+      static fn (Service $s): bool => $s->url !== null,
+    );
     $composeFailed = Project::composeFailed(ROOT . '/' . $sel);
   ?>
   <?php if ($composeFailed): ?>
@@ -454,12 +438,8 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
         <tr>
           <td class="svc-name"><?= h($s->name) ?></td>
           <td class="svc-url">
-            <?php if ($s->url !== null): ?>
-              <?= url_link($s->url) ?>
-              <span class="hint"><?= h($s->urlSource === 'traefik' ? 'traefik' : 'localhost') ?></span>
-            <?php else: ?>
-              <span class="hint">—</span>
-            <?php endif; ?>
+            <?= url_link($s->url) ?>
+            <span class="hint"><?= h($s->urlSource === 'traefik' ? 'traefik' : 'localhost') ?></span>
           </td>
           <td class="svc-creds">
             <?php foreach ($s->credentials as $c): ?><?= credential_widget($c) ?><?php endforeach; ?>
@@ -488,13 +468,6 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
     </div>
   <?php endif; ?>
 
-  <?php if ($p['readme']):
-    $pd = new Parsedown();
-    $pd->setSafeMode(true);
-  ?>
-    <h3 class="sect">README</h3>
-    <div class="readme"><?= $pd->text(file_get_contents($p['readme'])) ?></div>
-  <?php endif; ?>
 <?php endif; ?>
 </main>
 
