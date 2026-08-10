@@ -51,12 +51,26 @@ final class Readme
         $inFence = false;
 
         foreach ($lines as $line) {
-            if (preg_match('/^\s*(```|~~~)/', $line) === 1) {
+            $isFenceMarker = preg_match('/^\s*(```|~~~)/', $line) === 1;
+            if ($isFenceMarker) {
                 $inFence = !$inFence;
             }
 
-            // A heading inside a fence is shell output or a comment, not a section.
-            if (!$inFence && preg_match('/^#{1,6}\s+(.+?)\s*#*\s*$/', $line, $m) === 1) {
+            $isHeading = preg_match('/^#{1,6}\s+(.+?)\s*#*\s*$/', $line, $m) === 1;
+
+            // An unterminated fence (opened but never closed) must not be allowed to
+            // suppress heading detection for the rest of the document — that would let
+            // a credential from one section (e.g. Production) silently merge into the
+            // previous section's (e.g. Development) group. A well-formed ATX heading
+            // at column 0 closes any still-open fence: real fence content essentially
+            // never happens to look like a heading line, and a fence that swallowed a
+            // whole later section undetected is far more dangerous than the rare false
+            // positive of a `# comment` line inside a snippet being read as a heading.
+            if ($inFence && !$isFenceMarker && $isHeading) {
+                $inFence = false;
+            }
+
+            if (!$inFence && !$isFenceMarker && $isHeading) {
                 $sections[] = ['heading' => $heading, 'body' => implode("\n", $body)];
                 $heading = trim(self::stripInlineMarkdown($m[1]));
                 $body = [];
@@ -232,14 +246,28 @@ final class Readme
                 continue;
             }
 
+            // Credential search target: normally the whole line, but if the line
+            // also carries a link (e.g. `[App](url) heslo: secret`), search the
+            // residue with the link syntax stripped out instead. Otherwise the
+            // credential pattern's anchor never matches past the markdown link,
+            // and a same-line secret would go unreported.
+            $credentialSource = $line;
+            $foundLinkOnThisLine = false;
+
             if (!$inFence) {
-                foreach (self::linksIn($line, $heading) as $link) {
+                $extracted = self::linksAndResidueIn($line, $heading);
+                foreach ($extracted['links'] as $link) {
                     $groups[] = ['link' => $link, 'credentials' => [], 'sources' => []];
                     $current = count($groups) - 1;
+                    $foundLinkOnThisLine = true;
+                }
+
+                if ($foundLinkOnThisLine) {
+                    $credentialSource = $extracted['residue'];
                 }
             }
 
-            $credential = $inFence ? self::envCredentialIn($line) : self::definitionCredentialIn($line);
+            $credential = $inFence ? self::envCredentialIn($line) : self::definitionCredentialIn($credentialSource);
             if ($credential === null) {
                 continue;
             }
@@ -294,6 +322,19 @@ final class Readme
     /** @return Link[] */
     private static function linksIn(string $line, string $heading): array
     {
+        return self::linksAndResidueIn($line, $heading)['links'];
+    }
+
+    /**
+     * Same extraction as linksIn(), but also returns the line with every consumed
+     * link substring removed. The residue lets the caller check for a credential
+     * that sits on the same line as a link (e.g. `[App](url) heslo: secret`)
+     * without the link's own brackets/URL confusing the credential pattern.
+     *
+     * @return array{links: Link[], residue: string}
+     */
+    private static function linksAndResidueIn(string $line, string $heading): array
+    {
         $links = [];
         $consumed = $line;
 
@@ -320,10 +361,11 @@ final class Readme
                 }
 
                 $links[] = new Link(self::hostOf($url), $url, $heading, 'proximity', []);
+                $consumed = str_replace($candidate, '', $consumed);
             }
         }
 
-        return $links;
+        return ['links' => $links, 'residue' => $consumed];
     }
 
     /** `user: admin`, `**Heslo:** `x``, `Username — admin` */
@@ -417,8 +459,20 @@ final class Readme
     }
 
     /**
-     * Keep the first occurrence of each URL. Credential-only entries (no URL) are
-     * keyed by context so two sections can each contribute one.
+     * Keep the first occurrence of each URL within a section. The context is always
+     * part of the key — otherwise two sections linking the same URL would collapse
+     * into one entry that keeps only the first section's credentials, which could
+     * silently attach a production secret to a link shown under a development
+     * heading (or vice versa).
+     *
+     * Credential-only entries (no URL, e.g. a table row with no URL column) are
+     * NOT distinguished by context alone: a section can contain several of them
+     * (one per table row), and they would all share the same empty-url/context
+     * key. The label is added to the key in that case so two different services
+     * without URLs in the same section are not silently collapsed into one,
+     * dropping one of their credentials. Label is deliberately left out of the
+     * key when a URL is present, so the existing "same URL under two different
+     * labels is the same link" dedup behaviour is unaffected.
      *
      * @param Link[] $links
      *
@@ -430,7 +484,11 @@ final class Readme
         $out = [];
 
         foreach ($links as $link) {
-            $key = ($link->url ?? '') . '|' . ($link->url === null ? $link->context : '');
+            $key = ($link->url ?? '') . '|' . $link->context;
+            if ($link->url === null) {
+                $key .= '|' . $link->label;
+            }
+
             if (isset($seen[$key])) {
                 continue;
             }
