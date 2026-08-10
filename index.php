@@ -2,6 +2,10 @@
 // Makeview – line viewer of make targets + README per project.
 // Single-file PHP server. Mount projects read-only at /projects.
 
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Makeview\Make;
+
 error_reporting(E_ALL & ~E_DEPRECATED); // Parsedown 1.7.4 is noisy on PHP 8.4
 
 define('ROOT', rtrim(getenv('MAKEVIEW_DIR') ?: '/projects', '/'));
@@ -26,30 +30,6 @@ function first_existing(string $dir, array $names): ?string {
         if (is_file("$dir/$n")) return "$dir/$n";
     }
     return null;
-}
-
-/**
- * Parse make targets. Documented = `target: ## desc`.
- * Returns [['target'=>, 'desc'=>], ...] documented first, then bare targets.
- */
-function parse_targets(string $file): array {
-    $documented = [];
-    $bare = [];
-    foreach (file($file, FILE_IGNORE_NEW_LINES) as $line) {
-        // documented: name: [deps] ## description
-        if (preg_match('/^([a-zA-Z0-9][a-zA-Z0-9_.\/-]*)\s*:[^=].*?##\s*(.+)$/', $line, $m)) {
-            $documented[] = ['target' => $m[1], 'desc' => trim($m[2])];
-            continue;
-        }
-        // bare target: name: (not :=, ?=, +=; not .PHONY etc.)
-        if (preg_match('/^([a-zA-Z0-9][a-zA-Z0-9_.\/-]*)\s*:([^=]|$)/', $line, $m)
-            && $m[1][0] !== '.') {
-            $bare[$m[1]] = true; // dedupe
-        }
-    }
-    // bare list excludes anything already documented
-    foreach ($documented as $d) unset($bare[$d['target']]);
-    return ['documented' => $documented, 'bare' => array_keys($bare)];
 }
 
 /** Cheap per-project metadata read straight from the filesystem (no git binary). */
@@ -313,7 +293,7 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   $cards = [];
   foreach ($projects as $name => $p) {
     $m = project_meta(ROOT . '/' . $name);
-    $m['targets'] = $p['makefile'] ? count(parse_targets($p['makefile'])['documented']) : 0;
+    $m['targets'] = $p['makefile'] ? count(Make::parseTargets((string)file_get_contents($p['makefile']))['documented']) : 0;
     $cards[$name] = $m;
   }
   uasort($cards, fn($a, $b) => $b['mtime'] <=> $a['mtime']);
@@ -322,7 +302,7 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   $featExcerpt = null;
   if ($featName !== null) {
     $fp = $projects[$featName];
-    if ($fp['makefile']) $featTargets = array_slice(parse_targets($fp['makefile'])['documented'], 0, 3);
+    if ($fp['makefile']) $featTargets = array_slice(Make::parseTargets((string)file_get_contents($fp['makefile']))['documented'], 0, 3);
     if ($fp['readme']) $featExcerpt = readme_excerpt($fp['readme']);
   }
 ?>
@@ -369,7 +349,7 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   <?php endif; ?>
 <?php else:
   $p = $projects[$sel];
-  $parsed = $p['makefile'] ? parse_targets($p['makefile']) : ['documented' => [], 'bare' => []];
+  $parsed = $p['makefile'] ? Make::parseTargets((string)file_get_contents($p['makefile'])) : ['documented' => [], 'bare' => []];
   $m = project_meta(ROOT . '/' . $sel);
 ?>
   <h2 class="title"><?= h($sel) ?></h2>
@@ -413,7 +393,6 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
   <?php endif; ?>
 
   <?php if ($p['readme']):
-    require_once __DIR__ . '/Parsedown.php';
     $pd = new Parsedown();
     $pd->setSafeMode(true);
   ?>
