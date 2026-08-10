@@ -69,9 +69,14 @@ READMEs, so don't point it at private projects on a public server.
 ## Development
 
 ```bash
-composer install
-./bin/dev vendor/bin/phpunit   # host PHP lacks dom/xml/mbstring; run tests in Docker
+make            # list the available targets
+make install    # Composer dependencies
+make test       # PHPUnit
 ```
+
+Composer and PHPUnit run inside Docker through `bin/dev`, because the host PHP
+usually lacks the dom/xml/mbstring extensions they need. `make up` starts the
+dashboard itself on http://localhost:8111.
 
 Parsers live in `src/` and take file **contents**, not paths — all filesystem
 access is in `src/Project.php`. That is what keeps `tests/` free of fixtures on
