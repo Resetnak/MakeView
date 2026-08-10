@@ -214,9 +214,19 @@ final class Compose
      */
     private static function extractUrl(array $definition): array
     {
-        $traefik = self::traefikUrl(self::labelsToMap($definition['labels'] ?? []));
+        [$traefik, $rejected] = self::traefikUrl(self::labelsToMap($definition['labels'] ?? []));
         if ($traefik !== null) {
             return [$traefik, 'traefik'];
+        }
+
+        // A Traefik Host() rule was present but failed to parse safely (e.g.
+        // malformed/unsafe characters). That is a deliberate "no URL" outcome,
+        // not "no Traefik rule" — falling through to the published port here
+        // would show an address the developer never declared as the service's
+        // entry point, which is exactly the misleading behaviour the strict
+        // charset was meant to prevent.
+        if ($rejected) {
+            return [null, null];
         }
 
         $port = self::portUrl($definition['ports'] ?? []);
@@ -260,8 +270,13 @@ final class Compose
      * https://argo.localhost — not localhost:port.
      *
      * @param array<string, string> $labels
+     *
+     * @return array{0: ?string, 1: bool} [url, rejected]. `rejected` is true
+     *         when a Host() rule was present but failed to parse safely; the
+     *         caller must treat that as a hard "no URL", never falling
+     *         through to a different URL source for this service.
      */
-    private static function traefikUrl(array $labels): ?string
+    private static function traefikUrl(array $labels): array
     {
         // When a service defines multiple routers, the first one whose label
         // key is encountered (map iteration / list order after
@@ -269,6 +284,14 @@ final class Compose
         // This mirrors YAML declaration order, not Traefik's own routing
         // precedence — acceptable here since this only picks a URL to
         // display, not an actual routing decision.
+        //
+        // If a router's Host() rule is rejected as malformed, we abort
+        // immediately rather than trying the next router label. A malformed
+        // rule is evidence this service's Traefik configuration cannot be
+        // trusted to identify the intended entry point; silently preferring
+        // a different router could surface an address the developer did not
+        // intend to be the primary one. Aborting is the conservative choice
+        // consistent with "emit nothing rather than something misleading."
         foreach ($labels as $key => $rule) {
             if (preg_match('/^traefik\.http\.routers\.([^.]+)\.rule$/', $key, $m) !== 1) {
                 continue;
@@ -282,18 +305,34 @@ final class Compose
                 continue;
             }
 
-            // Restrict captured hostnames to legal hostname characters only.
-            // Rejects userinfo (`@`), markup/quote injection, and anything else
-            // that isn't a valid DNS label so no attacker-controlled substring
-            // ever reaches a rendered `<a href>`.
-            preg_match_all('/Host\(`([A-Za-z0-9.\-]+)`\)/', $rule, $hosts);
+            // Restrict captured hosts to legal hostname characters, plus an
+            // optional `:port` suffix (a common explicit-port Traefik
+            // pattern, e.g. `app.localhost:8443`); the port is validated
+            // with the same strict parser used for compose `ports:` entries.
+            // Deliberately ASCII-only: widening this to admit raw UTF-8 (IDN
+            // hosts like café.localhost) would reopen the same door the
+            // charset was tightened to close, since Unicode ranges are far
+            // harder to bound safely against lookalike/control characters.
+            // Punycode (xn--caf-dma.localhost) already works today since
+            // it's plain ASCII.
+            preg_match_all('/Host\(`([A-Za-z0-9.\-]+)(?::(\d+))?`\)/', $rule, $hosts);
             if ($hosts[1] === [] || count($hosts[1]) !== count($anyHosts[1])) {
-                return null;
+                return [null, true];
+            }
+
+            $host = $hosts[1][0];
+            $portSuffix = $hosts[2][0] ?? '';
+            if ($portSuffix !== '') {
+                $port = self::toPort($portSuffix);
+                if ($port === null) {
+                    return [null, true];
+                }
+                $host .= ':' . $port;
             }
 
             $router = $m[1];
             $scheme = self::traefikScheme($labels, $router);
-            $url = $scheme . '://' . $hosts[1][0];
+            $url = $scheme . '://' . $host;
 
             // Only unambiguous single-host rules carry their path prefix.
             if (count($hosts[1]) === 1
@@ -302,10 +341,10 @@ final class Compose
                 $url .= '/' . ltrim($path[1], '/');
             }
 
-            return $url;
+            return [$url, false];
         }
 
-        return null;
+        return [null, false];
     }
 
     /** @param array<string, string> $labels */

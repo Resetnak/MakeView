@@ -273,6 +273,100 @@ final class ComposeTest extends TestCase
         self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
     }
 
+    public function testRejectedHostRuleDoesNotFallBackToPublishedPort(): void
+    {
+        // Round 1 regression: a malformed Host() rule must suppress the URL
+        // entirely, not fall through to the service's published port.
+        $yaml = <<<'YAML'
+        services:
+          a:
+            ports:
+              - "9999:80"
+            labels:
+              traefik.http.routers.a.rule: "Host(`evil@phish.example.com`)"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        $service = $this->byName(Compose::parse($yaml), 'a');
+
+        self::assertNull($service->url);
+        self::assertNull($service->urlSource);
+    }
+
+    public function testRejectedHostRuleAbortsBeforeLaterValidRouter(): void
+    {
+        // Deliberate choice: a malformed router aborts URL resolution for
+        // the whole service rather than skipping ahead to try the next
+        // router label. See traefikUrl() docblock for rationale.
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              traefik.http.routers.r1.rule: "Host(`bad@host.example.com`)"
+              traefik.http.routers.r2.rule: "Host(`good.localhost`)"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testHostRuleWithExplicitPortIsSupported(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`app.localhost:8443`)"
+        YAML;
+
+        self::assertSame('http://app.localhost:8443', $this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testHostRuleWithOutOfRangeExplicitPortIsRejected(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`app.localhost:99999`)"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testRawUnicodeHostIsRejected(): void
+    {
+        // IDN hosts must be supplied as punycode; raw UTF-8 is rejected
+        // rather than widening the charset back toward the original
+        // injection vector. See traefikUrl() docblock for rationale.
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`café.localhost`)"
+            environment:
+              APP_SECRET: secret
+        YAML;
+
+        self::assertNull($this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
+    public function testPunycodeHostIsSupported(): void
+    {
+        $yaml = <<<'YAML'
+        services:
+          app:
+            labels:
+              - "traefik.http.routers.app.rule=Host(`xn--caf-dma.localhost`)"
+        YAML;
+
+        self::assertSame('http://xn--caf-dma.localhost', $this->byName(Compose::parse($yaml), 'app')->url);
+    }
+
     public function testPathPrefixLabelRejectsInjectedAttributeCharacters(): void
     {
         $yaml = <<<'YAML'
