@@ -61,12 +61,18 @@ READMEs, so don't point it at private projects on a public server.
   get the address you'd actually type into a browser.
 - README links are paired with nearby credentials. People write those in
   whatever words and whatever language they document in, so the parser reads:
-  - markdown tables, both the usual `| Email | Heslo | Role |` shape (one entry
-    per account) and the transposed `| Field | Value |` one used for a single
-    test account;
+  - markdown tables in three shapes: the usual `| Email | Heslo | Role |` (one
+    entry per account), the transposed `| Field | Value |` used for a single
+    test account, and the configuration table `| Variable | Default |`, whose
+    variable names are read with the same vocabulary as compose env keys. A
+    variable table without a value column documents what a setting means rather
+    than what it is set to, and is left alone;
   - definition lines — `user: admin`, `**Heslo:** x`, `Username — admin` — and
     prose that skips the colon, as in ``uživatel `admin`, heslo `s3cret` `` or
     "(default password `admin`)", where the backticks mark the literal;
+  - a bare ``login` / `password`` pair, either in backticks or announced by a
+    word ("default credentials admin / secret123"). Without one of the two,
+    `src` / `tests` stays a pair of directories;
   - fenced blocks, read as `export KEY=value`, as YAML (`password: postgres`),
     and as JSON (the `curl` login example);
   - basic auth in a URL, which is reported and then stripped out of the link.

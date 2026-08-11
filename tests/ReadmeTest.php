@@ -798,4 +798,122 @@ final class ReadmeTest extends TestCase
         self::assertSame('sk-your-openai-api-key', $credentials[0]->value);
         self::assertTrue($credentials[0]->isPlaceholder);
     }
+
+    // ---- env tables ----
+
+    /**
+     * The most common way to document configuration is a table of variables
+     * with their defaults. The variable names are exactly what CredentialKeys
+     * already understands, so the rows that name a credential state one — with
+     * the default column as its value.
+     */
+    public function testEnvTableWithDefaultsYieldsTheCredentialRows(): void
+    {
+        $markdown = <<<'MD'
+        ## Konfigurace
+
+        | Variable | Default | Description |
+        |----------|---------|-------------|
+        | `APP_PORT` | `8080` | HTTP port |
+        | `DB_USER` | `postgres` | Database user |
+        | `DB_PASSWORD` | `devpass` | Database password |
+        MD;
+
+        self::assertSame(
+            ['user' => 'postgres', 'password' => 'devpass'],
+            $this->credentialValues(Readme::parse($markdown), 'Konfigurace'),
+        );
+    }
+
+    /**
+     * The same table without a value column documents what a variable means,
+     * not what it is set to. Nothing there is a credential.
+     */
+    public function testEnvTableWithoutAValueColumnStaysSilent(): void
+    {
+        $markdown = <<<'MD'
+        ## Konfigurace
+
+        | Proměnná | Popis |
+        |----------|-------|
+        | `DB_PASSWORD` | Heslo k databázi |
+        MD;
+
+        self::assertEmpty(Readme::parse($markdown));
+    }
+
+    /**
+     * The variable-column words are matched as whole cells. A header reading
+     * `API Key` still names a secret, not a configuration key, and the
+     * credential table it belongs to must keep working.
+     */
+    public function testKeyInsideALongerHeaderStillNamesACredentialColumn(): void
+    {
+        $markdown = <<<'MD'
+        ## Služby
+
+        | Služba | URL | API Key |
+        |--------|-----|---------|
+        | Argo | https://argo.localhost | argo-token-123 |
+        MD;
+
+        self::assertSame(
+            ['password' => 'argo-token-123'],
+            $this->credentialValues(Readme::parse($markdown), 'Argo'),
+        );
+    }
+
+    // ---- slash pairs beyond backticks ----
+
+    /**
+     * Bold is as common as backticks for marking a literal, and the pair is
+     * just as unambiguous when an introducing word announces it.
+     */
+    public function testBoldSlashSeparatedPairIsRead(): void
+    {
+        $markdown = <<<'MD'
+        ## Staging
+
+        http://staging.local — default credentials **admin** / **secret123**
+        MD;
+
+        self::assertSame(
+            ['user' => 'admin', 'password' => 'secret123'],
+            $this->credentialValues(Readme::parse($markdown), 'staging.local'),
+        );
+    }
+
+    /**
+     * A blockquote is a formatting choice, not a different kind of statement.
+     */
+    public function testSlashSeparatedPairInsideABlockquoteIsRead(): void
+    {
+        $markdown = <<<'MD'
+        ## QA
+
+        http://qa.local
+
+        > Credentials: `qa` / `qa-2024`
+        MD;
+
+        self::assertSame(
+            ['user' => 'qa', 'password' => 'qa-2024'],
+            $this->credentialValues(Readme::parse($markdown), 'qa.local'),
+        );
+    }
+
+    /**
+     * Two paths separated by a slash are still not a login, with or without
+     * markup around them.
+     */
+    public function testUnintroducedBoldPairIsNotACredential(): void
+    {
+        $markdown = <<<'MD'
+        ## Build
+
+        Sources live in **src** / **tests**.
+        MD;
+
+        self::assertEmpty(Readme::parse($markdown));
+    }
 }

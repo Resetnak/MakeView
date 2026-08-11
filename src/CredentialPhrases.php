@@ -200,27 +200,80 @@ final class CredentialPhrases
     }
 
     /**
-     * Read a bare `login / password` pair: two quoted values separated by a
-     * slash, where the first looks like an account name. No word introduces
-     * either, so the shape itself has to carry the meaning — which is why this
-     * is restricted to backtick-quoted values with an e-mail-like or
-     * login-like first half. Anything looser matches file paths and dates.
+     * Words announcing that a login pair follows, in the languages the rest of
+     * this class already speaks. They are what makes an unquoted pair readable:
+     * "credentials admin / secret123" states an account, while "src / tests"
+     * states two directories.
+     */
+    private const PAIR_INTRODUCER_PATTERN =
+        'credentials|credential|login|logins|account|access'
+        . '|přihlašovací\s+údaje|prihlasovaci_?\s*udaje|přihlášení|prihlaseni|údaje|udaje|přístup|pristup'
+        . '|zugangsdaten|anmeldedaten|dane\s+logowania|credenciales|credenziali|identifiants';
+
+    /**
+     * Read a bare `login / password` pair: two values separated by a slash,
+     * where the first looks like an account name. No word names either half, so
+     * the shape itself has to carry the meaning.
+     *
+     * Backticks are the strongest evidence of a literal and stand on their own.
+     * Without them there is nothing to distinguish an account from a pair of
+     * paths or a date, so an unquoted pair is read only when a word announces
+     * it. Bold is not that evidence: `**` is stripped before this runs, exactly
+     * as `**src** / **tests**` deserves.
      *
      * @return list<Credential>
      */
     public static function slashSeparatedPair(string $line): array
     {
         if (preg_match('/`([^`\s]+)`\s*\/\s*`([^`\s]+)`/u', $line, $m) !== 1) {
+            return self::introducedSlashPair($line);
+        }
+
+        // Backticks delimit the value, so the minimum length that keeps stray
+        // words out of unquoted matches does not apply: a login of `qa` is as
+        // deliberate as one of `qa-admin`.
+        return self::pairCredentials($m[1], $m[2], quoted: true);
+    }
+
+    /**
+     * The same pair without backticks, preceded by a word that announces it.
+     * The introducer may be several words back — "default credentials are
+     * admin / secret" — but must stay on the same line and not be separated by
+     * sentence-ending punctuation.
+     *
+     * @return list<Credential>
+     */
+    private static function introducedSlashPair(string $line): array
+    {
+        $pattern = '/(?:^|[\s*_`|>\-(\[])(?:' . self::PAIR_INTRODUCER_PATTERN . ')'
+            . '[^.:;!?\n]{0,20}[\s:=]\s*'
+            . '([^\s\/]+)\s*\/\s*([^\s\/]+)/iu';
+
+        if (preg_match($pattern, $line, $m) !== 1) {
             return [];
         }
 
-        [$user, $password] = [$m[1], $m[2]];
+        return self::pairCredentials($m[1], $m[2]);
+    }
 
+    /**
+     * Turn a candidate pair into credentials, or reject it.
+     *
+     * @param bool $quoted Whether the pair was delimited by the author rather
+     *                     than found in running text. Quoted values are taken at
+     *                     their stated length; unquoted ones must be long enough
+     *                     that they cannot be an ordinary short word.
+     *
+     * @return list<Credential>
+     */
+    private static function pairCredentials(string $user, string $password, bool $quoted = false): array
+    {
         // The first half must plausibly identify a person: an e-mail address,
         // or a short handle. A pair of paths ("`src/` / `dist/`") must not
         // become a login.
+        $minHandle = $quoted ? 1 : self::MIN_UNQUOTED_LENGTH;
         $looksLikeAccount = str_contains($user, '@')
-            || preg_match('/^[A-Za-z][A-Za-z0-9._-]{2,}$/', $user) === 1;
+            || preg_match('/^[A-Za-z][A-Za-z0-9._-]{' . ($minHandle - 1) . ',}$/', $user) === 1;
 
         if (!$looksLikeAccount || str_contains($user, '/') || str_contains($password, '/')) {
             return [];
@@ -228,7 +281,7 @@ final class CredentialPhrases
 
         $credentials = [];
         foreach ([['user', 'uživatel', $user], ['password', 'heslo', $password]] as [$kind, $label, $value]) {
-            if (self::isValueUnusable($value)) {
+            if (self::isValueUnusable($value, $quoted)) {
                 return [];
             }
 
@@ -257,8 +310,11 @@ final class CredentialPhrases
     /**
      * A value is unusable when it is empty, is noise by the shared rules, or is
      * an ordinary word that happened to follow a credential word.
+     *
+     * @param bool $quoted The author delimited the value, so its length is a
+     *                     statement rather than an accident.
      */
-    private static function isValueUnusable(string $value): bool
+    private static function isValueUnusable(string $value, bool $quoted = false): bool
     {
         $trimmed = trim($value, " \t`\"'");
 
@@ -266,7 +322,7 @@ final class CredentialPhrases
             return true;
         }
 
-        if (!str_contains($trimmed, ' ') && mb_strlen($trimmed) < self::MIN_UNQUOTED_LENGTH) {
+        if (!$quoted && !str_contains($trimmed, ' ') && mb_strlen($trimmed) < self::MIN_UNQUOTED_LENGTH) {
             return true;
         }
 

@@ -178,6 +178,15 @@ final class Readme
             $header = self::tableCells($lines[$i]);
             $columns = self::classifyColumns($header);
 
+            if (isset($columns['variable'], $columns['value'])) {
+                $env = self::envTableLink($lines, $i, $columns, $heading);
+                if ($env !== null) {
+                    $links[] = $env;
+                }
+
+                continue;
+            }
+
             if (!isset($columns['label']) || (!isset($columns['user']) && !isset($columns['password']))) {
                 // The header named no role, but a two-column table often puts
                 // the roles in the first column instead: `| Field | Value |`
@@ -211,10 +220,16 @@ final class Readme
     /** @return list<string> */
     private static function tableCells(string $line): array
     {
+        return array_map(fn ($cell) => trim(self::stripInlineMarkdown($cell)), self::rawTableCells($line));
+    }
+
+    /** The same split, with the markup left on. @return list<string> */
+    private static function rawTableCells(string $line): array
+    {
         $trimmed = trim($line);
         $trimmed = preg_replace('/^\||\|$/', '', $trimmed) ?? $trimmed;
 
-        return array_map(fn ($cell) => trim(self::stripInlineMarkdown($cell)), explode('|', $trimmed));
+        return explode('|', $trimmed);
     }
 
     /**
@@ -228,6 +243,18 @@ final class Readme
 
         foreach ($header as $index => $cell) {
             $normalized = mb_strtolower($cell);
+
+            // Tested before the roles below: a header cell reading "Variable"
+            // or "Env" would otherwise be claimed as a service name, and "Key"
+            // as a password, turning a configuration table into an account.
+            if (!isset($columns['variable']) && preg_match('/^(proměnná|promenna|variable|env|env\s*var|klíč|klic|key|nastavení|nastaveni|setting|option)$/u', $normalized) === 1) {
+                $columns['variable'] = $index;
+                continue;
+            }
+            if (!isset($columns['value']) && preg_match('/^(hodnota|value|výchozí|vychozi|default|výchozí\s+hodnota|vychozi\s+hodnota|default\s+value|příklad|priklad|example)$/u', $normalized) === 1) {
+                $columns['value'] = $index;
+                continue;
+            }
 
             if (!isset($columns['url']) && preg_match('/url|adresa|address|odkaz|link/', $normalized) === 1) {
                 $columns['url'] = $index;
@@ -260,6 +287,55 @@ final class Readme
         }
 
         return $columns;
+    }
+
+    /**
+     * A configuration table: one column names an environment variable, another
+     * gives its value. The names are the same ones compose files use, so
+     * CredentialKeys decides which rows state a credential and which merely
+     * document a port.
+     *
+     * A value column is required. `| Proměnná | Popis |` describes what a
+     * variable means without ever saying what it is set to, and reading its
+     * prose as a secret is how a documentation table becomes a wall of
+     * nonsense.
+     *
+     * @param list<string>       $lines
+     * @param array<string, int> $columns
+     */
+    private static function envTableLink(array $lines, int $headerIndex, array $columns, string $heading): ?Link
+    {
+        if ($heading === '') {
+            return null;
+        }
+
+        $credentials = [];
+
+        for ($i = $headerIndex + 2; $i < count($lines); $i++) {
+            if (!str_contains($lines[$i], '|')) {
+                break;
+            }
+
+            $cells = self::tableCells($lines[$i]);
+            $value = trim($cells[$columns['value']] ?? '');
+
+            // Variable names are read with their underscores intact: the shared
+            // vocabulary matches on `DB_PASSWORD`, and the inline-markdown strip
+            // that serves every other column would leave it as `DBPASSWORD`.
+            $key = trim(str_replace('`', '', self::rawTableCells($lines[$i])[$columns['variable']] ?? ''));
+
+            if ($key === '' || $value === '' || !CredentialKeys::matches($key)) {
+                continue;
+            }
+
+            if (CredentialKeys::isNoise($value)) {
+                continue;
+            }
+
+            $credentials[] = Credential::fromKey($key, $value);
+        }
+
+        return $credentials === [] ? null : new Link($heading, null, $heading, 'table', $credentials);
     }
 
     /**
