@@ -54,6 +54,13 @@ function credential_widget(Credential $c): string
         return '<span class="cred cred-ph" title="' . $label . '">' . h($c->value) . '</span>';
     }
 
+    if ($c->isUncertain()) {
+        $tip = $c->evidence !== '' ? $label . ' — nejisté: ' . $c->evidence : $label . ' — nejisté';
+
+        return '<span class="cred cred-uncertain" title="' . h($tip) . '">'
+            . h($c->value) . '<span class="cred-flag">?</span></span>';
+    }
+
     if ($c->kind === 'user') {
         return '<button type="button" class="cred cmd" data-cmd="' . h($c->value) . '"'
             . ' data-tip="Kopírovat ' . $label . '">' . h($c->value) . '</button>';
@@ -248,6 +255,8 @@ if (!is_string($sel) || !isset($projects[$sel])) $sel = null; // whitelist: bloc
           font-size:13px; vertical-align:middle; }
   .cred.cmd { margin-left:10px; }
   .cred-ph { color:var(--muted); font-style:italic; }
+  .cred-uncertain { color:var(--muted); border-bottom:1px dotted var(--muted); cursor:help; }
+  .cred-flag { margin-left:3px; font-size:11px; opacity:.7; }
   .cred-secret { display:inline-flex; align-items:center; gap:4px; padding:2px 6px;
                  border:1px solid var(--line); border-radius:4px;
                  background:var(--panel); }

@@ -4,6 +4,14 @@ declare(strict_types=1);
 
 namespace Makeview;
 
+use Makeview\Readme\AdjacentLineDetector;
+use Makeview\Readme\BlockParser;
+use Makeview\Readme\CommandLineDetector;
+use Makeview\Readme\LinkDetector;
+use Makeview\Readme\ListDetector;
+use Makeview\Readme\Scorer;
+use Makeview\Readme\ShapeDetector;
+use Makeview\Readme\TableDetector;
 use Makeview\Value\Credential;
 use Makeview\Value\Link;
 
@@ -15,19 +23,6 @@ use Makeview\Value\Link;
  */
 final class Readme
 {
-    private const CREDENTIAL_WORDS =
-        'user(?:name)?|uživatel(?:ské\s+jméno)?|uzivatel(?:ske\s+jmeno)?|přihlašovací\s+jméno|prihlasovaci\s+jmeno'
-        . '|jméno|jmeno|login|e-?mail|účet|ucet|account'
-        . '|heslo|password|passwd|pass|token|api[\s_-]?key|secret|klíč|klic';
-
-    /** Credential kind by the Czech or English word that introduced it. */
-    private const USER_WORDS = [
-        'user', 'username', 'uživatel', 'uzivatel', 'uživatelské jméno', 'uzivatelske jmeno',
-        'přihlašovací jméno', 'prihlasovaci jmeno', 'jméno', 'jmeno', 'login',
-        'email', 'e-mail', 'účet', 'ucet', 'account',
-    ];
-    private const TOKEN_WORDS = ['token', 'api key', 'apikey', 'api_key', 'api-key', 'klíč', 'klic'];
-
     /** @return Link[] */
     public static function parse(string $markdown): array
     {
@@ -37,6 +32,40 @@ final class Readme
             foreach (self::parseSection($section['heading'], $section['body']) as $link) {
                 $links[] = $link;
             }
+        }
+
+        // Block-based detectors catch shapes the section walk cannot: a value
+        // on the line below its label, links defined at the foot of the file,
+        // and secrets identifiable by their own format with no introducing word.
+        $blocks = BlockParser::parse($markdown);
+
+        foreach (LinkDetector::detect($blocks) as $found) {
+            $links[] = new Link($found['label'], $found['url'], $found['heading'], 'proximity', []);
+        }
+
+        // One link per heading, never one for the whole document: a single
+        // link labelled with the first block's heading would carry every list
+        // credential in the file, showing a production secret under a
+        // development heading. Grouping preserves document order.
+        $byHeading = [];
+        foreach (ListDetector::detect($blocks) as $found) {
+            $byHeading[$found['heading']][] = $found['credential'];
+        }
+
+        // A label alone on one line with its value on the next is neither a
+        // list nor a complete line, so neither detector above sees it.
+        foreach (AdjacentLineDetector::detect($blocks) as $found) {
+            $byHeading[$found['heading']][] = $found['credential'];
+        }
+
+        // Credentials passed as command arguments (`psql -U app`, `curl -u
+        // admin:pass`), which no word introduces.
+        foreach (CommandLineDetector::detect($blocks) as $found) {
+            $byHeading[$found['heading']][] = $found['credential'];
+        }
+
+        foreach ($byHeading as $heading => $credentials) {
+            $links[] = new Link((string) $heading, null, (string) $heading, 'definition', $credentials);
         }
 
         return self::deduplicate($links);
@@ -150,293 +179,13 @@ final class Readme
     /** @return Link[] */
     private static function parseSection(string $heading, string $body): array
     {
-        $tableLinks = self::extractTable($body, $heading);
+        $tableLinks = TableDetector::extractTable($body, $heading);
         if ($tableLinks !== []) {
             // A credential table is self-contained; proximity would only add noise.
             return $tableLinks;
         }
 
         return self::pairByProximity($heading, $body);
-    }
-
-    /**
-     * A markdown table counts as a credential table only when its header has both
-     * a URL-or-service column and a user-or-password column.
-     *
-     * @return Link[]
-     */
-    private static function extractTable(string $body, string $heading): array
-    {
-        $lines = preg_split('/\R/', $body) ?: [];
-        $links = [];
-
-        for ($i = 0; $i < count($lines) - 1; $i++) {
-            if (!str_contains($lines[$i], '|') || preg_match('/^\s*\|?[\s:|-]+\|[\s:|-]*$/', $lines[$i + 1]) !== 1) {
-                continue;
-            }
-
-            $header = self::tableCells($lines[$i]);
-            $columns = self::classifyColumns($header);
-
-            if (isset($columns['variable'], $columns['value'])) {
-                $env = self::envTableLink($lines, $i, $columns, $heading);
-                if ($env !== null) {
-                    $links[] = $env;
-                }
-
-                continue;
-            }
-
-            if (!isset($columns['label']) || (!isset($columns['user']) && !isset($columns['password']))) {
-                // The header named no role, but a two-column table often puts
-                // the roles in the first column instead: `| Field | Value |`
-                // over rows `Email` and `Password`. Read it sideways before
-                // giving up on it.
-                $transposed = self::transposedTableLink($lines, $i, $heading);
-                if ($transposed !== null) {
-                    $links[] = $transposed;
-                }
-
-                continue;
-            }
-
-            for ($row = $i + 2; $row < count($lines); $row++) {
-                if (!str_contains($lines[$row], '|')) {
-                    break;
-                }
-
-                $link = self::tableRowToLink(self::tableCells($lines[$row]), $columns, $heading);
-                if ($link !== null) {
-                    $links[] = $link;
-                }
-            }
-
-            $i = $row;
-        }
-
-        return $links;
-    }
-
-    /** @return list<string> */
-    private static function tableCells(string $line): array
-    {
-        return array_map(fn ($cell) => trim(self::stripInlineMarkdown($cell)), self::rawTableCells($line));
-    }
-
-    /** The same split, with the markup left on. @return list<string> */
-    private static function rawTableCells(string $line): array
-    {
-        $trimmed = trim($line);
-        $trimmed = preg_replace('/^\||\|$/', '', $trimmed) ?? $trimmed;
-
-        return explode('|', $trimmed);
-    }
-
-    /**
-     * @param list<string> $header
-     *
-     * @return array<string, int> role => column index
-     */
-    private static function classifyColumns(array $header): array
-    {
-        $columns = [];
-
-        foreach ($header as $index => $cell) {
-            $normalized = mb_strtolower($cell);
-
-            // Tested before the roles below: a header cell reading "Variable"
-            // or "Env" would otherwise be claimed as a service name, and "Key"
-            // as a password, turning a configuration table into an account.
-            if (!isset($columns['variable']) && preg_match('/^(proměnná|promenna|variable|env|env\s*var|klíč|klic|key|nastavení|nastaveni|setting|option)$/u', $normalized) === 1) {
-                $columns['variable'] = $index;
-                continue;
-            }
-            if (!isset($columns['value']) && preg_match('/^(hodnota|value|výchozí|vychozi|default|výchozí\s+hodnota|vychozi\s+hodnota|default\s+value|příklad|priklad|example)$/u', $normalized) === 1) {
-                $columns['value'] = $index;
-                continue;
-            }
-
-            if (!isset($columns['url']) && preg_match('/url|adresa|address|odkaz|link/', $normalized) === 1) {
-                $columns['url'] = $index;
-                continue;
-            }
-            if (!isset($columns['user']) && preg_match('/uživatel|uzivatel|user|login|jméno|jmeno|e-?mail|účet|ucet|account/', $normalized) === 1) {
-                $columns['user'] = $index;
-                continue;
-            }
-            if (!isset($columns['password']) && preg_match('/heslo|password|passwd|pass|token|klíč|klic|key|secret/', $normalized) === 1) {
-                $columns['password'] = $index;
-                continue;
-            }
-            if (!isset($columns['name']) && preg_match('/služba|sluzba|service|název|nazev|name|prostředí|prostredi|env|portál|portal|aplikace|app/', $normalized) === 1) {
-                $columns['name'] = $index;
-            }
-        }
-
-        // The label column is the service name when present, then the URL. A
-        // credential table often has neither — `| Email | Heslo | Role |` names
-        // no service at all — and there the account itself is the only thing
-        // that identifies the row, so it becomes the label. Without this the
-        // whole table used to be discarded for want of a label column.
-        if (isset($columns['name'])) {
-            $columns['label'] = $columns['name'];
-        } elseif (isset($columns['url'])) {
-            $columns['label'] = $columns['url'];
-        } elseif (isset($columns['user'])) {
-            $columns['label'] = $columns['user'];
-        }
-
-        return $columns;
-    }
-
-    /**
-     * A configuration table: one column names an environment variable, another
-     * gives its value. The names are the same ones compose files use, so
-     * CredentialKeys decides which rows state a credential and which merely
-     * document a port.
-     *
-     * A value column is required. `| Proměnná | Popis |` describes what a
-     * variable means without ever saying what it is set to, and reading its
-     * prose as a secret is how a documentation table becomes a wall of
-     * nonsense.
-     *
-     * @param list<string>       $lines
-     * @param array<string, int> $columns
-     */
-    private static function envTableLink(array $lines, int $headerIndex, array $columns, string $heading): ?Link
-    {
-        if ($heading === '') {
-            return null;
-        }
-
-        $credentials = [];
-
-        for ($i = $headerIndex + 2; $i < count($lines); $i++) {
-            if (!str_contains($lines[$i], '|')) {
-                break;
-            }
-
-            $cells = self::tableCells($lines[$i]);
-            $value = trim($cells[$columns['value']] ?? '');
-
-            // Variable names are read with their underscores intact: the shared
-            // vocabulary matches on `DB_PASSWORD`, and the inline-markdown strip
-            // that serves every other column would leave it as `DBPASSWORD`.
-            $key = trim(str_replace('`', '', self::rawTableCells($lines[$i])[$columns['variable']] ?? ''));
-
-            if ($key === '' || $value === '' || !CredentialKeys::matches($key)) {
-                continue;
-            }
-
-            if (CredentialKeys::isNoise($value)) {
-                continue;
-            }
-
-            $credentials[] = Credential::fromKey($key, $value);
-        }
-
-        return $credentials === [] ? null : new Link($heading, null, $heading, 'table', $credentials);
-    }
-
-    /**
-     * Read a table whose roles run down the first column rather than across the
-     * header — `| Field | Value |` over rows `Email` / `Password`, the shape a
-     * README uses to describe one single test account.
-     *
-     * Only two-column tables qualify. A wider one lists many things and its
-     * header is the description of them; reading it sideways would pair a role
-     * with whichever column happened to come second.
-     *
-     * @param list<string> $lines
-     */
-    private static function transposedTableLink(array $lines, int $headerIndex, string $heading): ?Link
-    {
-        if (count(self::tableCells($lines[$headerIndex])) !== 2) {
-            return null;
-        }
-
-        $credentials = [];
-
-        for ($i = $headerIndex + 2; $i < count($lines); $i++) {
-            if (!str_contains($lines[$i], '|')) {
-                break;
-            }
-
-            $cells = self::tableCells($lines[$i]);
-            if (count($cells) !== 2) {
-                break;
-            }
-
-            [$role, $value] = $cells;
-            $value = trim($value);
-
-            if ($value === '' || CredentialKeys::isNoise($value)) {
-                continue;
-            }
-
-            // The role cell must be the word itself, not a sentence mentioning
-            // it: a `| Proměnná | Popis |` table documents variables, and its
-            // descriptions are prose, not secrets.
-            if (preg_match('/^\s*(' . CredentialPhrases::WORD_PATTERN . ')\s*$/iu', $role) !== 1) {
-                continue;
-            }
-
-            $kind = CredentialPhrases::kindFor($role);
-            $credentials[] = new Credential(
-                $kind,
-                $kind === 'user' ? 'uživatel' : ($kind === 'token' ? 'token' : 'heslo'),
-                $value,
-                CredentialKeys::isPlaceholder($value),
-            );
-        }
-
-        // One lone value is not an account; it is a row that happened to be
-        // named "password". Require a pair before believing the table.
-        if (count($credentials) < 2 || $heading === '') {
-            return null;
-        }
-
-        return new Link($heading, null, $heading, 'table', $credentials);
-    }
-
-    /**
-     * @param list<string>       $cells
-     * @param array<string, int> $columns
-     */
-    private static function tableRowToLink(array $cells, array $columns, string $heading): ?Link
-    {
-        $label = trim($cells[$columns['label']] ?? '');
-        if ($label === '' || preg_match('/^[-: ]*$/', $label) === 1) {
-            return null;
-        }
-
-        $url = null;
-        if (isset($columns['url'])) {
-            $url = self::firstUrlIn($cells[$columns['url']] ?? '');
-            if ($columns['label'] === $columns['url'] && $url !== null) {
-                $label = self::hostOf($url);
-            }
-        }
-
-        $credentials = [];
-        foreach (['user' => 'user', 'password' => 'password'] as $role => $kind) {
-            if (!isset($columns[$role])) {
-                continue;
-            }
-
-            $value = trim($cells[$columns[$role]] ?? '');
-            if ($value === '' || CredentialKeys::isNoise($value)) {
-                continue;
-            }
-
-            $credentials[] = new Credential($kind, $role === 'user' ? 'uživatel' : 'heslo', $value, CredentialKeys::isPlaceholder($value));
-        }
-
-        if ($url === null && $credentials === []) {
-            return null;
-        }
-
-        return new Link($label, $url, $heading, 'table', $credentials);
     }
 
     /**
@@ -489,6 +238,10 @@ final class Readme
             $credentials = $inFence
                 ? self::fencedCredentialsIn($line)
                 : self::definitionCredentialsIn($credentialSource);
+
+            if ($credentials === [] && !$inFence) {
+                $credentials = self::shapeIdentifiedCredentialsIn($credentialSource);
+            }
 
             if ($credentials === []) {
                 continue;
@@ -639,6 +392,174 @@ final class Readme
     }
 
     /**
+     * A secret recognisable purely from its own format, with no `heslo:` or
+     * `token:` in front of it — a pasted `AKIA…` key or a JWT dropped into a
+     * sentence. Word-driven detection never sees these, so each
+     * whitespace-separated word on the line is checked against
+     * {@see ShapeDetector} instead, and the ones that match are scored so the
+     * dashboard can show why.
+     *
+     * @return list<Credential>
+     */
+    private static function shapeIdentifiedCredentialsIn(string $line): array
+    {
+        // Deliberately NOT stripInlineMarkdown(): that helper removes `_` as
+        // markdown emphasis, which is also a literal character inside real
+        // secrets (`ghp_…`, `xoxb-…`). Stripping it silently corrupts the value
+        // the dashboard hands the user, and destroys the very prefix the shape
+        // is recognised by. Emphasis markers are shed by the per-word trim
+        // below instead, which only touches the ends of a token.
+        // An assignment is read as an assignment, fence or no fence. Scanning
+        // `PG_USERS_HOST_PORT=15432` as one opaque token cleared the entropy
+        // bar on its digits and its `=`, and reported the whole string —
+        // variable name included — as a secret. Splitting it here lets
+        // CredentialKeys apply the same judgement it already applies inside a
+        // fence, which knows that a key ending in _PORT or _HOST names no
+        // secret. Returning early is deliberate: once a line is an assignment,
+        // its remaining words are the value, already handled.
+        // An assignment need not start its line: READMEs write them mid-sentence
+        // ("Set FOO=bar before running") and after a bullet marker. Anchoring at
+        // the start missed both, and the whole `KEY=VALUE` string went on to the
+        // entropy scan below.
+        // Note the two distinct outcomes: a line holding an assignment returns
+        // here either way. `ANDROID_SERIAL=emulator-5554` yields no credential
+        // AND stops — falling through to the entropy scan is exactly what
+        // reported the whole `KEY=VALUE` string as a secret.
+        if (self::hasEnvAssignment($line)) {
+            return self::envAssignmentsIn($line);
+        }
+
+        $words = preg_split('/\s+/', trim($line, " \t,;")) ?: [];
+
+        $credentials = [];
+
+        foreach ($words as $word) {
+            // A word that still carries `[`, `]`, `(`, or `)` is leftover markdown
+            // link syntax linksAndResidueIn() could not strip — a mailto:/javascript:
+            // link is deliberately left unconsumed there because it is not a URL we
+            // report, not a credential candidate for this scan to split apart.
+            if (preg_match('/[\[\]()]/', $word) === 1) {
+                continue;
+            }
+
+            // `*` and `_` are trimmed only at the ends, where they are emphasis
+            // markers; inside a token they are part of the secret itself.
+            $candidate = trim($word, " \t,;.!?\"'`<>*_");
+            if ($candidate === '') {
+                continue;
+            }
+
+            $shape = ShapeDetector::detect($candidate);
+            if ($shape === null || !self::looksGenerated($shape, $candidate)) {
+                continue;
+            }
+
+            // Evidence is observed, never assumed. This scan runs on free prose,
+            // where the only thing actually known about the candidate is its
+            // shape; claiming `structured` here put every match at 0.70, above
+            // THRESHOLD_CONFIRMED, so prose reached the UI behind the "real
+            // secret" widget and the uncertain branch became unreachable.
+            // A bare shape match alone is 0.55 — `likely`, not `confirmed`.
+            $evidence = ['quoted' => self::isBacktickQuoted($word)];
+            $score = Scorer::score($candidate, $evidence);
+
+            $credentials[] = new Credential(
+                'token',
+                $shape,
+                $candidate,
+                CredentialKeys::isPlaceholder($candidate),
+                $score,
+                Scorer::explain($candidate, $evidence),
+            );
+        }
+
+        return $credentials;
+    }
+
+    /**
+     * A value an author wrapped in backticks was marked as a literal, which is
+     * weak but real corroboration that it is a value rather than prose. It is
+     * the only extra signal available to a scan that runs on bare words.
+     */
+    private static function isBacktickQuoted(string $word): bool
+    {
+        $trimmed = trim($word, " \t,;.!?\"'<>");
+
+        return strlen($trimmed) > 2 && str_starts_with($trimmed, '`') && str_ends_with($trimmed, '`');
+    }
+
+    /** Same-case letter runs longer than this never occur in a generated secret. */
+    private const MAX_GENERATED_CASE_RUN = 2;
+
+    /**
+     * The prefixed-vendor and JWT shapes are already narrow enough to trust on
+     * their own — nothing but a real token matches `AKIA…` or a decodable JWT
+     * header. The `high_entropy` fallback is not: Shannon entropy alone scores
+     * an ordinary word above the bits/char threshold whenever its letters are
+     * varied enough, including plain English words like "Description" or
+     * "Authentication", hyphenated compounds like "user-scoped", and — the
+     * false positive this gate exists to rule out — camelCase identifiers
+     * lifted straight from source, like "getUserName" or "isPlaceholder".
+     *
+     * A digit is still the strongest signal a word is generated rather than
+     * typed, so that alone is enough. But requiring it unconditionally
+     * silently drops letter-only generated secrets like `xKmPvQzLwnR` — exactly
+     * the "shape-identified secret with no introducing word" case this scan
+     * exists for. What actually separates a generated string from an English
+     * word or a code identifier is not *how many times* the case changes but
+     * *how long a run of same-case letters gets between changes*: prose and
+     * identifiers are built from real words or word-fragments, so every
+     * transition is followed by a run of several letters in one case
+     * ("Description", "get|User|Name" — each run is 3+ letters); a generated
+     * string has no words in it, so case flips every letter or two
+     * ("x|K|m|P|v|Q|z|L|wn|R" tops out at a run of 2). A candidate with no
+     * digit is therefore accepted only when its longest same-case run is
+     * short enough that it could not be a real word or identifier fragment.
+     */
+    private static function looksGenerated(string $shape, string $candidate): bool
+    {
+        if ($shape !== 'high_entropy') {
+            return true;
+        }
+
+        if (preg_match('/[0-9]/', $candidate) === 1) {
+            return true;
+        }
+
+        return self::longestCaseRun($candidate) <= self::MAX_GENERATED_CASE_RUN;
+    }
+
+    /**
+     * Length of the longest run of consecutive letters that share the same
+     * case. Case changes (upper/lower boundaries) start a new run; non-letter
+     * characters (digits, punctuation) are ignored rather than breaking a run,
+     * since they carry no case of their own.
+     */
+    private static function longestCaseRun(string $candidate): int
+    {
+        $letters = array_values(array_filter(
+            preg_split('//u', $candidate, -1, PREG_SPLIT_NO_EMPTY) ?: [],
+            static fn (string $char): bool => ctype_alpha($char),
+        ));
+
+        $longest = 0;
+        $current = 0;
+        $currentIsUpper = null;
+
+        foreach ($letters as $letter) {
+            $isUpper = ctype_upper($letter);
+            if ($currentIsUpper !== null && $isUpper !== $currentIsUpper) {
+                $current = 0;
+            }
+            $current++;
+            $currentIsUpper = $isUpper;
+            $longest = max($longest, $current);
+        }
+
+        return $longest;
+    }
+
+    /**
      * Credentials inside a fenced block. Three shapes appear there, and all
      * three are equally common:
      *
@@ -666,6 +587,58 @@ final class Readme
         return CredentialPhrases::inLine($line);
     }
 
+    /**
+     * A shell-style assignment anywhere on a line: at its start, after a bullet
+     * marker, or inside a sentence. The key is upper-case by convention, which
+     * is what keeps this from matching ordinary prose containing an `=`.
+     */
+    private const ENV_ASSIGNMENT_PATTERN =
+        '/(?:^|[\s*_`>(\[])(?:export\s+)?([A-Z][A-Z0-9_]*)=("[^"\n]*"|\'[^\'\n]*\'|[^\s]*)/';
+
+    /** Whether the line states an assignment at all, secret or not. */
+    private static function hasEnvAssignment(string $line): bool
+    {
+        return preg_match(self::ENV_ASSIGNMENT_PATTERN, $line) === 1;
+    }
+
+    /**
+     * Every `KEY=VALUE` on a line, wherever it sits — start of line, after a
+     * bullet, or mid-sentence. Each key is judged by CredentialKeys, so a name
+     * ending in _PORT or _HOST yields nothing while _PASSWORD yields its value.
+     *
+     * Returning an empty list for `ANDROID_SERIAL=emulator-5554` is the point:
+     * the caller then reports nothing at all for that line, rather than letting
+     * the entropy scan take the whole string as one opaque secret.
+     *
+     * The value ends at whitespace. A value containing spaces has to be quoted
+     * to be readable as one anyway, and the quotes are stripped below.
+     *
+     * @return list<Credential>
+     */
+    private static function envAssignmentsIn(string $line): array
+    {
+        if (preg_match_all(self::ENV_ASSIGNMENT_PATTERN, $line, $matches, PREG_SET_ORDER) === 0) {
+            return [];
+        }
+
+        $credentials = [];
+
+        foreach ($matches as $match) {
+            if (!CredentialKeys::matches($match[1])) {
+                continue;
+            }
+
+            $value = trim($match[2], " \t\"'");
+            if ($value === '' || CredentialKeys::isNoise($value)) {
+                continue;
+            }
+
+            $credentials[] = Credential::fromKey($match[1], $value);
+        }
+
+        return $credentials;
+    }
+
     /** `export ARGOCD_PASSWORD=x` or `ARGOCD_PASSWORD=x` inside a fenced block */
     private static function envCredentialIn(string $line): ?Credential
     {
@@ -685,18 +658,6 @@ final class Readme
         return Credential::fromKey($m[1], $value);
     }
 
-    private static function kindForWord(string $word): string
-    {
-        if (in_array($word, self::USER_WORDS, true)) {
-            return 'user';
-        }
-        if (in_array($word, self::TOKEN_WORDS, true)) {
-            return 'token';
-        }
-
-        return 'password';
-    }
-
     private static function firstUrlIn(string $text): ?string
     {
         if (preg_match('/\[([^\]]*)\]\(\s*([^)\s]+)[^)]*\)/', $text, $m) === 1) {
@@ -711,9 +672,19 @@ final class Readme
     }
 
     /** Only http and https survive; anything else (javascript:, mailto:) is dropped. */
-    private static function normalizeUrl(string $candidate): ?string
+    public static function normalizeUrl(string $candidate): ?string
     {
-        $url = trim($candidate, " \t<>\"'");
+        // Backticks are trimmed with the other delimiters: READMEs write
+        // `http://localhost:8080` constantly, and a bare URL ends at
+        // whitespace, so the closing mark stayed inside the value and reached
+        // the dashboard's href — a link that does not resolve.
+        //
+        // Trailing sentence punctuation goes too. "API is at http://x." ends a
+        // sentence, not a path, and every call site was rtrim-ing the same
+        // characters by hand anyway.
+        $url = trim($candidate, " \t<>\"'`");
+        $url = rtrim($url, '.,;:');
+
         if (preg_match('/^https?:\/\/[^\s]+$/i', $url) !== 1) {
             return null;
         }
@@ -742,10 +713,31 @@ final class Readme
 
         $password = parse_url($url, PHP_URL_PASS);
 
-        $credentials = [new Credential('user', 'uživatel', urldecode($user), CredentialKeys::isPlaceholder($user))];
+        // URL syntax defines the userinfo part: this is not an inference from
+        // wording or layout but the format itself saying what these are, and
+        // the value sits next to the link it opens.
+        $evidence = ['introduced' => true, 'structured' => true, 'nearLink' => true];
+
+        $decodedUser = urldecode($user);
+        $credentials = [new Credential(
+            'user',
+            'uživatel',
+            $decodedUser,
+            CredentialKeys::isPlaceholder($user),
+            Scorer::score($decodedUser, $evidence),
+            Scorer::explain($decodedUser, $evidence),
+        )];
+
         if (is_string($password) && $password !== '') {
             $decoded = urldecode($password);
-            $credentials[] = new Credential('password', 'heslo', $decoded, CredentialKeys::isPlaceholder($decoded));
+            $credentials[] = new Credential(
+                'password',
+                'heslo',
+                $decoded,
+                CredentialKeys::isPlaceholder($decoded),
+                Scorer::score($decoded, $evidence),
+                Scorer::explain($decoded, $evidence),
+            );
         }
 
         // Rebuild without the userinfo part. Anything we cannot rebuild safely
@@ -775,7 +767,7 @@ final class Readme
      * useless. The path is kept for the same reason when the host alone would
      * not distinguish two entries.
      */
-    private static function hostOf(string $url): string
+    public static function hostOf(string $url): string
     {
         $host = parse_url($url, PHP_URL_HOST);
         if (!is_string($host) || $host === '') {
@@ -801,9 +793,24 @@ final class Readme
      *                            backticks delimit it, so stripping them first
      *                            would make `heslo: `two words`` unreadable.
      */
-    private static function stripInlineMarkdown(string $text, bool $keepBackticks = false): string
+    public static function stripInlineMarkdown(string $text, bool $keepBackticks = false): string
     {
-        return trim((string) preg_replace($keepBackticks ? '/[*_]/' : '/[`*_]/', '', $text));
+        // Emphasis is a *pair* of markers wrapping a run of text, and only the
+        // paired form is markdown. A lone `_` inside a word is a literal
+        // character — `grafana_admin`, `ghp_…`, `POSTGRES_PASSWORD` — so
+        // deleting every `_` corrupts the value the dashboard hands the reader.
+        // Matching the pairs leaves those untouched.
+        $stripped = (string) preg_replace(
+            ['/\*\*(.+?)\*\*/us', '/\*(.+?)\*/us', '/(?<![A-Za-z0-9])__(.+?)__(?![A-Za-z0-9])/us', '/(?<![A-Za-z0-9])_(.+?)_(?![A-Za-z0-9])/us'],
+            '$1',
+            $text
+        );
+
+        if (!$keepBackticks) {
+            $stripped = str_replace('`', '', $stripped);
+        }
+
+        return trim($stripped);
     }
 
     /**
@@ -828,7 +835,7 @@ final class Readme
      */
     private static function deduplicate(array $links): array
     {
-        $seen = [];
+        $positions = [];
         $out = [];
 
         foreach ($links as $link) {
@@ -837,14 +844,56 @@ final class Readme
                 $key .= '|' . $link->label;
             }
 
-            if (isset($seen[$key])) {
+            if (!isset($positions[$key])) {
+                $positions[$key] = count($out);
+                $out[] = $link;
                 continue;
             }
 
-            $seen[$key] = true;
-            $out[] = $link;
+            // Two detectors reaching the same link is the normal case, not a
+            // conflict: one may have read the username and the other the
+            // password. Dropping the later entry outright discarded whichever
+            // half arrived second, so the halves are merged instead.
+            $out[$positions[$key]] = self::mergeCredentials($out[$positions[$key]], $link);
         }
 
         return $out;
+    }
+
+    /**
+     * Add the second link's credentials to the first, keeping document order
+     * and skipping values already present. A value can legitimately be reported
+     * twice — a table row and a sentence stating the same account — and showing
+     * it twice reads as two different secrets.
+     */
+    private static function mergeCredentials(Link $kept, Link $duplicate): Link
+    {
+        $credentials = [];
+
+        // Keyed by value alone, not by value and kind. The same secret often
+        // arrives from two detectors with different kinds — the shape scan
+        // guesses `token` from entropy while a `Heslo:` label states
+        // `password` — and keying on both let it through twice, which reads as
+        // two separate secrets that happen to be identical.
+        foreach ([...$kept->credentials, ...$duplicate->credentials] as $credential) {
+            $existing = $credentials[$credential->value] ?? null;
+
+            if ($existing === null || self::isBetterEvidence($credential, $existing)) {
+                $credentials[$credential->value] = $credential;
+            }
+        }
+
+        return $kept->withCredentials(array_values($credentials));
+    }
+
+    /**
+     * Which of two findings for the same value to keep. A credential the author
+     * named outranks one inferred from the value's shape: `high_entropy` states
+     * only that the value looks random, which is true of a password and a token
+     * alike, so it must never displace a `Heslo:` label that says which it is.
+     */
+    private static function isBetterEvidence(Credential $candidate, Credential $existing): bool
+    {
+        return $existing->label === 'high_entropy' && $candidate->label !== 'high_entropy';
     }
 }

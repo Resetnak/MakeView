@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Makeview;
 
+use Makeview\Readme\Scorer;
+use Makeview\Readme\ShapeDetector;
 use Makeview\Value\Credential;
 
 /**
@@ -41,7 +43,18 @@ final class CredentialPhrases
     /** Words introducing an API token or key. */
     private const TOKEN_WORDS = [
         'token', 'api key', 'apikey', 'api_key', 'api-key', 'access token', 'accesstoken',
+        'access key', 'accesskey', 'access_key', 'access-key',
+        'secret key', 'secretkey', 'secret_key', 'secret-key',
+        'api secret', 'api_secret', 'client secret', 'client_secret',
         'klíč', 'klic', 'kľúč', 'kluc', 'schlüssel', 'schluessel', 'klucz', 'clave', 'clé', 'chiave',
+    ];
+
+    /** Words introducing a password. Mirrors the password branch of WORD_PATTERN. */
+    private const PASSWORD_WORDS = [
+        'password', 'passwd', 'pass',
+        'heslo', 'hesla',
+        'passwort', 'kennwort',
+        'hasło', 'haslo', 'contraseña', 'contrasena', 'senha',
     ];
 
     /**
@@ -54,15 +67,20 @@ final class CredentialPhrases
         'uživatelsk[éeá]\s+jm[ée]no|uzivatelsk[eea]\s+jm[ee]no'
         . '|přihlašovací\s+jméno|prihlasovaci\s+jmeno'
         . '|nazwa\s+użytkownika|nazwa\s+uzytkownika'
-        . '|user\s?name|access\s?token|api[\s_-]?key|anmeldename'
+        . '|user\s?name|access[\s_-]?token|access[\s_-]?key|secret[\s_-]?key'
+        . '|api[\s_-]?key|api[\s_-]?secret|client[\s_-]?secret|anmeldename'
         // usernames
-        . '|user|login|account|e-?mail|mail'
+        . '|user|login|account|e-?mail(?:em|u|y)?|mail(?:em|u|y)?'
         . '|uživatel|uzivatel|používateľ|pouzivatel|jméno|jmeno|účet|ucet'
         . '|benutzername|benutzer|nutzer|konto'
         . '|użytkownik|uzytkownik'
         . '|usuario|usuário|utilisateur|utente|identifiant|correo'
         // passwords
-        . '|heslo|hesla|password|passwort|kennwort|passwd|pass'
+        // Czech and Polish inflect: the same word appears as "heslo", "heslem",
+        // "hesla", "hasłem". Enumerating each case by hand is what made the old
+        // list grow with every README, so the stem carries an optional ending.
+        . '|hesl[oaeuy]m?|hasł[oaeuy]m?|hasl[oaeuy]m?'
+        . '|password|passwort|kennwort|passwd|pass'
         . '|hasło|haslo|contraseña|contrasena|senha|mot\s+de\s+passe|palavra-passe'
         // tokens and keys
         . '|token|secret|schlüssel|schluessel|klíč|klic|kľúč|kluc|klucz|clave|clé|chiave';
@@ -125,6 +143,7 @@ final class CredentialPhrases
             . '(?:(?:' . self::QUALIFIER_PATTERN . ')\s+)?'
             . '(' . self::WORD_PATTERN . ')'
             . '(?:' . self::SEPARATOR_PATTERN . self::VALUE_PATTERN
+            . '|\s+(?:' . self::COPULA_PATTERN . ')\s+' . self::QUOTED_VALUE_PATTERN
             . '|\s+' . self::QUOTED_VALUE_PATTERN . ')'
             . '/iu';
 
@@ -156,16 +175,31 @@ final class CredentialPhrases
     private const SEPARATOR_PATTERN = '(?:\s*[:=]\s*|\s+[-\x{2013}\x{2014}]\s+)';
 
     /**
+     * Prose states a credential with a verb where a table would use a colon:
+     * "the password is `x`", "heslo je `x`", "das Kennwort lautet `x`". Without
+     * these the whole sentence form goes unread, and it is how most READMEs
+     * introduce a credential in running text rather than in a list.
+     *
+     * Only a quoted value may follow a copula. "the password is rotated weekly"
+     * must stay prose, and the quotes are what tell the two apart.
+     */
+    private const COPULA_PATTERN =
+        'is|are|was|will\s+be|defaults?\s+to|remains'
+        . '|je|jsou|bude|zůstává|zustava'
+        . '|ist|lautet|sind'
+        . '|es|son|est|sono|é';
+
+    /**
      * A quoted value may contain spaces because the quotes delimit it; a bare
      * one may not, because nothing else marks where it ends.
      *
-     * A bare value must also end the line, give or take a trailing remark in
-     * brackets: "heslo: admin (viz compose)" states a secret, while "Password:
-     * ask the team lead for the current shared value" is an instruction whose
-     * first word would otherwise be published as the password.
+     * A bare value ends at a comma, semicolon, or closing bracket as well as
+     * the end of the line: `heslo: admin, port: 8080` states a password and
+     * a port, and requiring end-of-line would have meant the whole line read
+     * as neither.
      */
     private const VALUE_PATTERN =
-        '(?:`([^`\n]+)`|"([^"\n]+)"|\'([^\'\n]+)\'|([^\s,;)\]]+)(?=\s*(?:[(\[][^\n]*)?$))';
+        '(?:`([^`\n]+)`|"([^"\n]+)"|\'([^\'\n]+)\'|([^\s,;)\]]+)(?=[,;)\]]|\s*(?:[(\[][^\n]*)?$))';
 
     /**
      * The same, minus the bare form: used where no colon separates the word
@@ -206,7 +240,12 @@ final class CredentialPhrases
      * states two directories.
      */
     private const PAIR_INTRODUCER_PATTERN =
-        'credentials|credential|login|logins|account|access'
+        // Verb phrases announce a pair as plainly as the nouns below do —
+        // "Sign in with admin / secret" is how prose states an account.
+        'sign\s+in(?:\s+with)?|log\s+in(?:\s+with)?|logga\s+in'
+        . '|přihlas(?:te)?\s+se|prihlas(?:te)?\s+se|přihlaš(?:te)?\s+se|prihlas(?:te)?'
+        . '|anmelden\s+mit|inicia\s+sesión|inicia\s+sesion|connectez-vous'
+        . '|credentials|credential|login|logins|account|access'
         . '|přihlašovací\s+údaje|prihlasovaci_?\s*udaje|přihlášení|prihlaseni|údaje|udaje|přístup|pristup'
         . '|zugangsdaten|anmeldedaten|dane\s+logowania|credenciales|credenziali|identifiants';
 
@@ -215,24 +254,22 @@ final class CredentialPhrases
      * where the first looks like an account name. No word names either half, so
      * the shape itself has to carry the meaning.
      *
-     * Backticks are the strongest evidence of a literal and stand on their own.
-     * Without them there is nothing to distinguish an account from a pair of
-     * paths or a date, so an unquoted pair is read only when a word announces
-     * it. Bold is not that evidence: `**` is stripped before this runs, exactly
-     * as `**src** / **tests**` deserves.
+     * A word must announce the pair. Backticks were once treated as evidence
+     * enough on their own, on the reasoning that an author who delimits both
+     * halves means them literally — but a literal is not a credential, and the
+     * shape is what READMEs use for menu paths, theme names and file pairs:
+     *
+     *     - dlouhy stisk ciferniku -> `Customize` / `Complications`
+     *
+     * That is a tap target, and it was reported as an account at a confirmed
+     * score. Nothing inside `a / b` separates a login from a menu path, so the
+     * introducing word is the only thing that can carry the meaning.
      *
      * @return list<Credential>
      */
     public static function slashSeparatedPair(string $line): array
     {
-        if (preg_match('/`([^`\s]+)`\s*\/\s*`([^`\s]+)`/u', $line, $m) !== 1) {
-            return self::introducedSlashPair($line);
-        }
-
-        // Backticks delimit the value, so the minimum length that keeps stray
-        // words out of unquoted matches does not apply: a login of `qa` is as
-        // deliberate as one of `qa-admin`.
-        return self::pairCredentials($m[1], $m[2], quoted: true);
+        return self::introducedSlashPair($line);
     }
 
     /**
@@ -245,15 +282,24 @@ final class CredentialPhrases
      */
     private static function introducedSlashPair(string $line): array
     {
+        // Each half may be backticked — "Credentials: `admin` / `s3cret`" is as
+        // common as the bare form — so the marks are matched here and trimmed
+        // below rather than being left to end up inside the reported value.
         $pattern = '/(?:^|[\s*_`|>\-(\[])(?:' . self::PAIR_INTRODUCER_PATTERN . ')'
             . '[^.:;!?\n]{0,20}[\s:=]\s*'
-            . '([^\s\/]+)\s*\/\s*([^\s\/]+)/iu';
+            . '`?([^\s\/`]+)`?\s*\/\s*`?([^\s\/`]+)`?/iu';
 
         if (preg_match($pattern, $line, $m) !== 1) {
             return [];
         }
 
-        return self::pairCredentials($m[1], $m[2]);
+        // "Přihlašovací údaje: admin / secret" names the pair as credentials
+        // even though no word names either half on its own. The backticked form
+        // counts as quoted, which is what lets a short handle like `qa` through
+        // the minimum-length rule that keeps stray words out of bare matches.
+        $quoted = str_contains($m[0], '`');
+
+        return self::pairCredentials($m[1], $m[2], quoted: $quoted, introduced: true);
     }
 
     /**
@@ -263,11 +309,18 @@ final class CredentialPhrases
      *                     than found in running text. Quoted values are taken at
      *                     their stated length; unquoted ones must be long enough
      *                     that they cannot be an ordinary short word.
+     * @param bool $introduced Whether a word announced the pair as credentials.
+     *                         True only for the introduced form, never for a
+     *                         bare backticked pair, which has no such word.
      *
      * @return list<Credential>
      */
-    private static function pairCredentials(string $user, string $password, bool $quoted = false): array
-    {
+    private static function pairCredentials(
+        string $user,
+        string $password,
+        bool $quoted = false,
+        bool $introduced = false,
+    ): array {
         // The first half must plausibly identify a person: an e-mail address,
         // or a short handle. A pair of paths ("`src/` / `dist/`") must not
         // become a login.
@@ -279,13 +332,35 @@ final class CredentialPhrases
             return [];
         }
 
+        // `POST /api/v1/auth/login` is a path, and the slashes inside it are
+        // separators to this scan. Rejecting the value in isValueUnusable()
+        // was not enough: the line simply fell through to here, where the
+        // path got split into a "login pair" of `POST` and `api`.
+        if (self::isHttpMethod($user)) {
+            return [];
+        }
+
         $credentials = [];
         foreach ([['user', 'uživatel', $user], ['password', 'heslo', $password]] as [$kind, $label, $value]) {
             if (self::isValueUnusable($value, $quoted)) {
                 return [];
             }
 
-            $credentials[] = new Credential($kind, $label, $value, CredentialKeys::isPlaceholder($value));
+            // The pair's shape is the evidence: two values in a `a / b` form,
+            // with a word announcing them or backticks marking them as
+            // literals. No word names either half individually, so `introduced`
+            // is not claimed — that is what keeps a pair of paths from
+            // outscoring an actual stated credential.
+            $evidence = ['structured' => true, 'quoted' => $quoted, 'introduced' => $introduced];
+
+            $credentials[] = new Credential(
+                $kind,
+                $label,
+                $value,
+                CredentialKeys::isPlaceholder($value),
+                Scorer::score($value, $evidence),
+                Scorer::explain($value, $evidence),
+            );
         }
 
         return $credentials;
@@ -296,9 +371,13 @@ final class CredentialPhrases
      * are the separated branch (backtick, double, single, bare); 6-8 the
      * unseparated one, which has no bare form.
      */
+    /**
+     * Groups 6-8 are the copula branch and 9-11 the unseparated one, neither of
+     * which has a bare form: with no separator, only quotes mark a value's end.
+     */
     private static function valueFrom(array $match): string
     {
-        foreach ([2, 3, 4, 5, 6, 7, 8] as $group) {
+        foreach ([2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as $group) {
             if (($match[$group] ?? '') !== '') {
                 return $match[$group];
             }
@@ -326,7 +405,45 @@ final class CredentialPhrases
             return true;
         }
 
+        if (self::isLocation($trimmed)) {
+            return true;
+        }
+
         return in_array(mb_strtolower($trimmed), self::VALUE_STOPWORDS, true);
+    }
+
+    /**
+     * A value that names where something lives rather than what it is.
+     *
+     * API docs write "Login: `POST /api/v1/auth/login`" and "Refresh token:
+     * `POST /api/v1/auth/refresh`" — a genuine credential word introducing an
+     * endpoint. A URL after "API key" is the page that issues the key, not the
+     * key. Both were reported as stated credentials because the word was real
+     * and the value was quoted.
+     *
+     * No secret is shaped like this: a path is what you call, a URL is where
+     * you go, and neither is what you authenticate with.
+     */
+    /** An HTTP verb never names an account. */
+    private static function isHttpMethod(string $value): bool
+    {
+        return preg_match('/^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/i', $value) === 1;
+    }
+
+    private static function isLocation(string $value): bool
+    {
+        // `POST /api/v1/auth/login`, `GET /users/me`
+        if (preg_match('#^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/#i', $value) === 1) {
+            return true;
+        }
+
+        // A bare path: `/api/v1/auth/login`. A leading slash and at least one
+        // more segment — a lone `/` is not a location worth rejecting.
+        if (preg_match('#^/[A-Za-z0-9._~-]+(?:/|$)#', $value) === 1) {
+            return true;
+        }
+
+        return preg_match('#^[a-z][a-z0-9+.-]*://#i', $value) === 1;
     }
 
     private static function build(string $word, string $value): ?Credential
@@ -337,14 +454,108 @@ final class CredentialPhrases
             return null;
         }
 
-        $kind = self::kindFor($word);
+        $kind = self::resolveKind($word, $trimmed);
+
+        // The author wrote the word, so the finding is introduced by definition.
+        // Quoting is recorded separately because it is what distinguishes a
+        // literal from the next word of a sentence.
+        $evidence = [
+            'introduced' => true,
+            'quoted' => $value !== $trimmed,
+        ];
 
         return new Credential(
             $kind,
-            $kind === 'user' ? 'uživatel' : ($kind === 'token' ? 'token' : 'heslo'),
+            self::labelFor($kind),
             $trimmed,
             CredentialKeys::isPlaceholder($trimmed),
+            Scorer::score($trimmed, $evidence),
+            Scorer::explain($trimmed, $evidence),
         );
+    }
+
+    /** The human-facing name for a kind, in the dashboard's language. */
+    private static function labelFor(string $kind): string
+    {
+        return match ($kind) {
+            'user' => 'uživatel',
+            'token' => 'token',
+            default => 'heslo',
+        };
+    }
+
+    /**
+     * Decide a credential's kind from the word that introduced it *and* the
+     * value itself, in falling order of reliability.
+     *
+     * A listed word is the strongest evidence there is: the author named the
+     * thing. Failing that the value's own shape often settles it outright — an
+     * `AKIA…` key is a token and an e-mail address is a username no matter what
+     * word preceded them. Only then is the word retried fuzzily, which is what
+     * catches inflections ("heslem", "emailem") and typos.
+     *
+     * The old code skipped the middle two steps and returned `password` for
+     * every unlisted word, so every inflected form in every language became a
+     * password and the vocabulary had to grow with each new README.
+     */
+    private static function resolveKind(string $word, string $value): string
+    {
+        $listed = self::listedKindFor($word);
+        if ($listed !== null) {
+            return $listed;
+        }
+
+        $shaped = self::kindFromValueShape($value);
+        if ($shaped !== null) {
+            return $shaped;
+        }
+
+        return self::fuzzyKindFor($word) ?? 'password';
+    }
+
+    /**
+     * What the value proves about itself, independent of any word. Only shapes
+     * that are unambiguous belong here: a high-entropy string is *not* one,
+     * because a generated password and an API token look alike, and guessing
+     * between them is what made every password come back as a token.
+     */
+    private static function kindFromValueShape(string $value): ?string
+    {
+        $trimmed = trim($value);
+
+        if ($trimmed === '') {
+            return null;
+        }
+
+        // An e-mail address is a login. Nothing else in a README is shaped this
+        // way, and it is how most admin panels identify an account.
+        if (preg_match('/^[^\s@]+@[A-Za-z0-9._-]+\.[A-Za-z]{2,}$/', $trimmed) === 1) {
+            return 'user';
+        }
+
+        // A vendor-prefixed key states its own issuer, so it is a token by
+        // construction. A bare high-entropy run deliberately does not qualify.
+        $shape = ShapeDetector::detect($trimmed);
+
+        return $shape !== null && $shape !== 'high_entropy' ? 'token' : null;
+    }
+
+    /** Which kind of credential a listed word introduces, or null if unlisted. */
+    private static function listedKindFor(string $word): ?string
+    {
+        $normalized = preg_replace('/\s+/u', ' ', mb_strtolower(trim($word))) ?? '';
+
+        if (in_array($normalized, self::USER_WORDS, true)) {
+            return 'user';
+        }
+        if (in_array($normalized, self::TOKEN_WORDS, true)) {
+            return 'token';
+        }
+        if (in_array($normalized, self::PASSWORD_WORDS, true)) {
+            return 'password';
+        }
+
+        return null;
     }
 
     /** Which kind of credential a word introduces. */
@@ -360,5 +571,64 @@ final class CredentialPhrases
         }
 
         return 'password';
+    }
+
+    /**
+     * Shortest word we will fuzzy-match. Below this, one edit is a large
+     * share of the word: `use` would reach `user` and `ass` would reach
+     * `pass`, turning ordinary prose into credentials.
+     */
+    private const MIN_FUZZY_LENGTH = 5;
+
+    /** Edits allowed. One covers a typo or an inflected ending; two invites collisions. */
+    private const MAX_EDIT_DISTANCE = 1;
+
+    /**
+     * Resolve a word to a credential kind, tolerating a typo or an unlisted
+     * inflection. Without this, every spelling of every word in every language
+     * has to be enumerated by hand, and the list grows on every new README.
+     */
+    public static function fuzzyKindFor(string $word): ?string
+    {
+        $normalized = mb_strtolower(trim($word));
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        // Exact matches first: an unmodified word never needs distance work,
+        // and the fuzzy pass below must not override a word that already fits.
+        if (in_array($normalized, self::USER_WORDS, true)) {
+            return 'user';
+        }
+        if (in_array($normalized, self::TOKEN_WORDS, true)) {
+            return 'token';
+        }
+        if (in_array($normalized, self::PASSWORD_WORDS, true)) {
+            return 'password';
+        }
+
+        if (mb_strlen($normalized) < self::MIN_FUZZY_LENGTH) {
+            return null;
+        }
+
+        $best = null;
+        $bestDistance = self::MAX_EDIT_DISTANCE + 1;
+
+        foreach ([['user', self::USER_WORDS], ['token', self::TOKEN_WORDS], ['password', self::PASSWORD_WORDS]] as [$kind, $words]) {
+            foreach ($words as $candidate) {
+                if (abs(mb_strlen($candidate) - mb_strlen($normalized)) > self::MAX_EDIT_DISTANCE) {
+                    continue;
+                }
+
+                $distance = levenshtein($normalized, mb_strtolower($candidate));
+                if ($distance < $bestDistance) {
+                    $bestDistance = $distance;
+                    $best = $kind;
+                }
+            }
+        }
+
+        return $bestDistance <= self::MAX_EDIT_DISTANCE ? $best : null;
     }
 }

@@ -857,8 +857,11 @@ final class ReadmeTest extends TestCase
         | Argo | https://argo.localhost | argo-token-123 |
         MD;
 
+        // The header names the secret, so it decides the kind: an `API Key`
+        // column holds tokens. It previously came back as a password, because
+        // every secret column was typed the same way regardless of its name.
         self::assertSame(
-            ['password' => 'argo-token-123'],
+            ['token' => 'argo-token-123'],
             $this->credentialValues(Readme::parse($markdown), 'Argo'),
         );
     }
