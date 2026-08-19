@@ -1,5 +1,7 @@
 # Makeview
 
+[![Stars this month](https://repometer.online/badge/Resetnak/MakeView/stars-30d.svg)](https://repometer.online/p/Resetnak/MakeView)
+
 A single-file PHP dashboard for your local projects. It scans a directory of
 projects, parses their **Makefile targets** (documented `target: ## desc` first),
 shows **git branch + last activity** (read straight from `.git` files, no git
