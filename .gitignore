@@ -9,3 +9,7 @@ PRODUCT.md
 
 # OS noise
 .DS_Store
+
+# Local agent tooling state — never commit
+.claude/
+.tokensave/
