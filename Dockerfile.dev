@@ -1,0 +1,19 @@
+# Development image: PHP with the extensions Composer and PHPUnit need.
+# The production image (Dockerfile) stays minimal on purpose.
+FROM php:8.3-cli-alpine
+
+# pcov, not xdebug: coverage is the only reason a driver is needed here, and
+# pcov measures it at a fraction of xdebug's cost. Without one, `make coverage`
+# runs but reports nothing, so the suite's coverage was unmeasurable.
+RUN apk add --no-cache git unzip $PHPIZE_DEPS oniguruma-dev libxml2-dev \
+    && docker-php-ext-install dom xml mbstring \
+    && pecl install pcov \
+    && docker-php-ext-enable pcov \
+    && apk del $PHPIZE_DEPS
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+ENV COMPOSER_ALLOW_SUPERUSER=1 \
+    COMPOSER_CACHE_DIR=/tmp/composer-cache
+
+WORKDIR /app

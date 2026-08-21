@@ -1,6 +1,14 @@
 # Downloaded dependency (fetched by Dockerfile / curl, see README)
 Parsedown.php
 
+# Composer
+/vendor/
+
+# PHPUnit
+.phpunit.cache/
+.phpunit.result.cache
+/coverage/
+
 # Internal working docs & tooling — not part of the public app
 .impeccable/
 CLAUDE.md
@@ -13,3 +21,6 @@ PRODUCT.md
 # Local agent tooling state — never commit
 .claude/
 .tokensave/
+
+# Planning notes from the superpowers workflow — local scratch, not part of the app
+docs/superpowers/

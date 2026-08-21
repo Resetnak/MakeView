@@ -1,11 +1,13 @@
-FROM php:8.3-cli-alpine
-
+FROM composer:2 AS deps
 WORKDIR /app
-COPY index.php .
+COPY composer.json composer.lock ./
+RUN composer install --no-dev --no-scripts --no-interaction --prefer-dist --optimize-autoloader
 
-# Parsedown: single-file markdown renderer, no composer needed.
-ADD --checksum=sha256:af4a4b29f38b5a00b003a3b7a752282274c969e42dee88e55a427b2b61a2f38f \
-    https://raw.githubusercontent.com/erusev/parsedown/1.7.4/Parsedown.php Parsedown.php
+FROM php:8.3-cli-alpine
+WORKDIR /app
+COPY --from=deps /app/vendor ./vendor
+COPY index.php ./
+COPY src ./src
 
 EXPOSE 8080
 CMD ["php", "-S", "0.0.0.0:8080", "index.php"]

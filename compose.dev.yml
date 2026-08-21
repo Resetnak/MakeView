@@ -1,0 +1,20 @@
+# Development toolchain: Composer and PHPUnit run here because the host PHP
+# lacks the dom/xml/mbstring extensions they require.
+#
+#   docker compose -f compose.dev.yml run --rm tools composer install
+#   docker compose -f compose.dev.yml run --rm tools vendor/bin/phpunit
+services:
+  tools:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    working_dir: /app
+    volumes:
+      - .:/app
+      - composer-cache:/tmp/composer-cache
+    # Write files as the host user so vendor/ is not owned by root.
+    # UID is read-only in bash, so pass HOST_UID/HOST_GID instead.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+
+volumes:
+  composer-cache:
